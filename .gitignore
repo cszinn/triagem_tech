@@ -1,0 +1,20 @@
+# Ambientes Virtuais
+venv/
+.env/
+env/
+.venv/
+
+# Cache do Python
+__pycache__/
+*.pyc
+
+# Configurações de IDE
+.vscode/
+.idea/
+
+# Configurações locais (contém URL privada da API e dados de impressora)
+config.json
+config_impressora.json
+
+# Etiquetas geradas (arquivos de saída)
+etiquetas/
