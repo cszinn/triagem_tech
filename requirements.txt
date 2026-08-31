@@ -3,3 +3,4 @@ autocorrect
 reportlab
 qrcode[pil]
 pywin32
+requests
