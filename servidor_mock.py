@@ -1,4 +1,4 @@
-﻿"""
+"""
 servidor_mock.py - Servidor de teste local para o Painel de Triagem.
 Simula todos os endpoints da API real sem precisar de banco de dados.
 
@@ -130,6 +130,7 @@ _caixas_recebimentos = [
 ]
 
 _proximo_id_estoque = 100
+_itens_estoque = {}
 
 @app.route("/api/triagem/dominios", methods=["GET"])
 def dominios():
@@ -165,8 +166,29 @@ def salvar_triagem():
     modelo_nome = dados.get("modelo", {}).get("modelo", {}).get("nome", "?")
     id_gerado = _proximo_id_estoque
     _proximo_id_estoque += 1
+    
+    _itens_estoque[id_gerado] = dados
+    _itens_estoque[id_gerado]["idItemEstoque"] = id_gerado
+    
     print(f"[MOCK] Triagem recebida: {modelo_nome} -> ID Estoque: {id_gerado}")
     return jsonify({"idItemEstoque": id_gerado, "mensagem": "Triagem salva (MODO MOCK)", "modelo": modelo_nome})
+
+@app.route("/api/triagem/triagem/<int:item_id>", methods=["GET"])
+def buscar_triagem(item_id):
+    if item_id in _itens_estoque:
+        return jsonify(_itens_estoque[item_id])
+    return jsonify({"mensagem": "Item nao encontrado"}), 404
+
+@app.route("/api/triagem/<int:item_id>", methods=["PUT", "PATCH"])
+def atualizar_triagem(item_id):
+    if item_id not in _itens_estoque:
+        return jsonify({"mensagem": "Item nao encontrado"}), 404
+        
+    dados = request.get_json(silent=True) or {}
+    _itens_estoque[item_id].update(dados)
+    
+    print(f"[MOCK] Triagem atualizada -> ID Estoque: {item_id}")
+    return jsonify({"idItemEstoque": item_id, "mensagem": "Triagem atualizada (MODO MOCK)"})
 
 @app.route("/api/triagem/avarias", methods=["POST"])
 def cadastrar_avaria():

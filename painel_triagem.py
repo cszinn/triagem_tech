@@ -93,7 +93,7 @@ class SistemaTriagem(ctk.CTk):
         # 3. Aplica as configurações diretamente do dicionário
         self.title(self._cfg["app_titulo"])
         self.geometry(self._cfg["app_geometria"])
-        self.state("zoomed")
+        self.after(100, lambda: self.state("zoomed"))
         # Número de patrimônio (recuperado do arquivo ou default 75)
         self._patrimonio_num = self._cfg.get("patrimonio_num", 75)
         
@@ -114,7 +114,16 @@ class SistemaTriagem(ctk.CTk):
         self.carregar_dominios()
 
     def criar_cabecalho(self):
-        self.lbl_titulo = ctk.CTkLabel(self, text="Auditoria e Triagem de Dispositivos", font=ctk.CTkFont(size=24, weight="bold"))
+        try:
+            from PIL import Image
+            import os
+            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_hq_cropped.png")
+            logo_img = ctk.CTkImage(light_image=Image.open(logo_path),
+                                    dark_image=Image.open(logo_path),
+                                    size=(312, 80))
+            self.lbl_titulo = ctk.CTkLabel(self, image=logo_img, text="")
+        except Exception as e:
+            self.lbl_titulo = ctk.CTkLabel(self, text="Auditoria e Triagem de Dispositivos", font=ctk.CTkFont(size=24, weight="bold"))
         self.lbl_titulo.grid(row=0, column=0, columnspan=3, pady=(15, 5))
         
         self.lbl_status = ctk.CTkLabel(self, text="Inicializando motor de triagem...", text_color="gray", font=ctk.CTkFont(size=14))
@@ -130,6 +139,18 @@ class SistemaTriagem(ctk.CTk):
             command=self.carregar_dominios
         )
         self.btn_atualizar_dados.place(relx=0.98, rely=0.02, anchor="ne")
+        
+        self.btn_sair = ctk.CTkButton(
+            self, 
+            text="🔙 Voltar ao Hub", 
+            width=140, 
+            height=32,
+            fg_color="#8A1111", 
+            hover_color="#5C0B0B", 
+            font=ctk.CTkFont(weight="bold"),
+            command=self.destroy
+        )
+        self.btn_sair.place(relx=0.02, rely=0.02, anchor="nw")
         self.bind("<F5>", lambda e: self.carregar_dominios())
     
     def criar_combo_leitura(self, parent, texto, comando_selecao=None):
@@ -1170,7 +1191,7 @@ class SistemaTriagem(ctk.CTk):
     
     def carregar_modelos_fisicos(self, modelo_digitado):
         texto = modelo_digitado.strip()
-        if not texto or texto == "Carregando..." or texto == "Selecione uma Marca":
+        if not texto or texto == "Selecione uma Marca":
             return
             
         self.atualizar_status(f"Buscando modelos físicos para: {texto}...", "yellow")
@@ -1439,6 +1460,8 @@ class SistemaTriagem(ctk.CTk):
             # Se a caixa de texto estiver vazia, volta a lista inteira
             if not termo_norm or termo == "Carregando..." or termo == "Selecione uma Marca":
                 combo.configure(values=originais)
+                if hasattr(combo, "_open_dropdown_menu"):
+                    combo._open_dropdown_menu()
                 return
                 
             filtrados = []
@@ -1458,6 +1481,8 @@ class SistemaTriagem(ctk.CTk):
                             
             # Atualiza o dropdown apenas com as opções válidas
             combo.configure(values=filtrados if filtrados else [""])
+            if hasattr(combo, "_open_dropdown_menu"):
+                combo._open_dropdown_menu()
 
         # O 'add="+"' garante que não vamos sobrescrever os atalhos de <Return> que você já criou
         combo._entry.bind("<KeyRelease>", on_keyrelease, add="+")
@@ -1466,6 +1491,8 @@ class SistemaTriagem(ctk.CTk):
         """Sempre que a API retornar dados novos, usamos essa função para salvar a lista original."""
         combo.configure(values=valores)
         combo._valores_originais = valores
+        if combo.get() == "Carregando...":
+            combo.set("")
                     
                 
 if __name__ == "__main__":
