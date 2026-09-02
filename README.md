@@ -51,7 +51,8 @@ Os dados extraídos são exibidos na tela, permitindo complementação com inspe
 ```
 C:\Triagem\
 │
-├── painel_triagem.py       # Interface gráfica principal (execute este arquivo)
+├── hub.py                  # Hub Central de Módulos (EXECUTE ESTE ARQUIVO)
+├── painel_triagem.py       # Módulo 1: Auditoria e Triagem de Dispositivos
 ├── servidor_mock.py        # Servidor de teste local para uso offline
 ├── extrator.py             # Motor de extração via ADB (uso legado/CLI)
 ├── requirements.txt        # Dependências Python
@@ -189,10 +190,10 @@ Navegue até a pasta do projeto e execute o painel principal:
 
 ```cmd
 cd C:\Triagem
-python painel_triagem.py
+python hub.py
 ```
 
-Ou clique duas vezes no arquivo `painel_triagem.py` se o Python estiver associado a arquivos `.py` no Windows.
+Ou clique duas vezes no arquivo `hub.py` se o Python estiver associado a arquivos `.py` no Windows. A partir do Hub, você poderá acessar o **Painel de Triagem** ou outros módulos (como Consulta Web).
 
 ---
 
@@ -466,7 +467,7 @@ python -m pip install -r requirements.txt
 
 cd C:\Triagem
 pip install -r requirements.txt
-python painel_triagem.py
+python hub.py
 ```
 
 ---
