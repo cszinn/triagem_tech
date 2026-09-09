@@ -51,6 +51,7 @@ PASTA_TOOLS = os.path.join(DIRETORIO_ATUAL, "platform-tools")
 
 # Define o caminho exato dos executáveis
 CAMINHO_ADB = os.path.join(PASTA_TOOLS, "adb.exe")
+CAMINHO_FASTBOOT = os.path.join(PASTA_TOOLS, "fastboot.exe")
 CAMINHO_IDEVICEINFO = os.path.join(PASTA_TOOLS, "ideviceinfo.exe")
 CAMINHO_IDEVICEID = os.path.join(PASTA_TOOLS, "idevice_id.exe")
 
@@ -186,6 +187,9 @@ class SistemaTriagem(ctk.CTk):
 
         self.btn_android = ctk.CTkButton(frame_auto, text="Ler Aparelho (Android ADB)", fg_color="#1f6aa5", command=self.iniciar_leitura_android)
         self.btn_android.pack(pady=5, padx=20, fill="x")
+
+        self.btn_fastboot = ctk.CTkButton(frame_auto, text="Ler Aparelho (Fastboot)", fg_color="#E67E22", hover_color="#D35400", command=self.iniciar_leitura_fastboot)
+        self.btn_fastboot.pack(pady=5, padx=20, fill="x")
 
         self.switch_manual = ctk.CTkSwitch(frame_auto, text="Modo Manual (Habilitar Leitor de Código)", command=self.alternar_modo_manual)
         self.switch_manual.pack(pady=(15, 5), padx=20, anchor="w")
@@ -1376,52 +1380,214 @@ class SistemaTriagem(ctk.CTk):
             
             modelo = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.product.model'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
             
-            nome_comercial = modelo 
+            try:
+                mercado_raw = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.product.marketname'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+                nome_comercial = mercado_raw if mercado_raw else modelo
+            except Exception:
+                nome_comercial = modelo
             
-            serie = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.serialno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+            try:
+                serie_psno = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.ril.oem.psno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+                serie_gsm = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'vendor.gsm.serial'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+                serie_boot = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.boot.serialno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+                serie_normal = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.serialno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+                
+                if serie_psno and len(serie_psno) > 4:
+                    serie = serie_psno
+                elif serie_normal and serie_normal != "N/A" and serie_normal != "unknown":
+                    serie = serie_normal
+                elif serie_gsm and len(serie_gsm) > 4:
+                    serie = serie_gsm
+                else:
+                    serie = serie_boot
+            except Exception:
+                serie = "N/A"
 
             self.atualizar_status("Bypass em andamento para extração de IMEI...", "yellow")
-            # Note o uso do f-string e das aspas duplas em volta do {CAMINHO_ADB} caso o caminho tenha espaços
-            imei_cru = subprocess.getoutput('"' + CAMINHO_ADB + '" shell "service call iphonesubinfo 1 | grep -o \'[0-9a-f]\\{8\\} \' | tail -n+3 | tr -d \' \\n\'"').strip()
+            imeis_meids = set()
+            
+            for i in range(1, 6):
+                for slot in [0, 1]:
+                    try:
+                        cmd = f'"{CAMINHO_ADB}" shell "service call iphonesubinfo {i} i32 {slot}"'
+                        out = subprocess.getoutput(cmd)
+                        if 'Parcel' in out:
+                            parts = re.findall(r"'(.*?)'", out)
+                            clean_str = "".join(parts).replace('.', '').replace(' ', '').strip()
+                            if len(clean_str) >= 14 and clean_str.isalnum():
+                                imeis_meids.add(clean_str)
+                    except Exception:
+                        pass
+                        
+            try:
+                prop_imeis = subprocess.getoutput(f'"{CAMINHO_ADB}" shell "getprop | grep -i imei"')
+                for match in re.findall(r'\[(.*?)\]:\s*\[(.*?)\]', prop_imeis):
+                    val = match[1].strip()
+                    if len(val) >= 14 and val.isalnum():
+                        imeis_meids.add(val)
+            except Exception:
+                pass
 
-            if len(imei_cru) > 8 and "Exception" not in imei_cru:
-                imei1 = imei_cru
-                imei2 = "N/A" 
-                eid = "N/A"
-                meid = "N/A"
+            ids_lista = sorted(list(imeis_meids))
+            imei1 = "N/A"
+            imei2 = "N/A"
+            meid = "N/A"
+            
+            for ident in ids_lista:
+                if len(ident) == 14:
+                    meid = ident
+                elif len(ident) >= 15:
+                    if imei1 == "N/A":
+                        imei1 = ident
+                    elif imei2 == "N/A" and ident != imei1:
+                        imei2 = ident
+
+            eid = "N/A"
+            try:
+                prop_eid = subprocess.getoutput(f'"{CAMINHO_ADB}" shell "getprop | grep -i eid"')
+                for match in re.findall(r'\[(.*?)\]:\s*\[(.*?)\]', prop_eid):
+                    val = match[1].strip()
+                    if len(val) == 32 and val.isdigit() and val.startswith("89"):
+                        eid = val
+                        break
+            except Exception:
+                pass
+
+            if imei1 != "N/A" or imei2 != "N/A":
                 status_final = f"Leitura ADB concluída: {marca} {modelo}"
                 cor_final = "#00FF00"
             else:
-                imei1 = "N/A"
-                imei2 = "N/A"
-                eid = "N/A"
-                meid = "N/A"
                 status_final = f"Leitura parcial ({marca} {modelo}): IMEI bloqueado pelo Android 10+"
                 cor_final = "yellow"
             
-            # ... dentro do try de extrair_dados_android, logo após checar o IMEI ...
-            
+            self.atualizar_status("Calculando capacidade de disco (Storage)...", "yellow")
+            armazenamento_final = "N/A"
+            try:
+                df_out = subprocess.check_output([CAMINHO_ADB, 'shell', 'df'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
+                for linha in df_out.split('\n'):
+                    if '/data' in linha:
+                        partes = linha.split()
+                        if len(partes) >= 4:
+                            # Tratar possível quebra de linha do df
+                            # Se a primeira coluna começar com '/', é o caminho (ex: /dev/block/dm-4), tamanho está no índice 1
+                            if partes[0].startswith('/'):
+                                tamanho_str = partes[1]
+                            # Se começar com número, a linha quebrou e o caminho ficou na linha anterior, tamanho no índice 0
+                            elif partes[0][0].isdigit():
+                                tamanho_str = partes[0]
+                            else:
+                                tamanho_str = partes[1]
+                                
+                            tamanho_str = tamanho_str.upper()
+                            match = re.search(r'([\d\.]+)', tamanho_str)
+                            if match:
+                                val = float(match.group(1))
+                                if 'G' in tamanho_str:
+                                    gb = val
+                                elif 'M' in tamanho_str:
+                                    gb = val / 1024
+                                elif 'K' in tamanho_str:
+                                    gb = val / (1024 * 1024)
+                                else:
+                                    # Sem sufixo, o df reporta em 1K-blocks
+                                    gb = val / (1024 * 1024)
+                                    
+                                if gb > 0:
+                                    tamanhos_mercado = [8, 16, 32, 64, 128, 256, 512, 1024]
+                                    # O tamanho físico é sempre maior que a partição /data (pois o OS ocupa espaço)
+                                    tamanho_real = next((t for t in tamanhos_mercado if t >= gb), tamanhos_mercado[-1])
+                                    armazenamento_final = f"{tamanho_real} GB"
+                                    break
+            except Exception:
+                pass
+
             self.atualizar_status("Calculando capacidade de RAM (MemTotal)...", "yellow")
             try:
                 ram_raw = subprocess.check_output([CAMINHO_ADB, 'shell', 'cat /proc/meminfo'], text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                # Procura por "MemTotal:      8192000 kB"
-                kb_match = re.search(r'MemTotal:\s+(\d+)\s+kB', ram_raw)
+                kb_match = re.search(r'MemTotal:\s+(\d+)\s+kB', ram_raw, re.IGNORECASE)
                 if kb_match:
-                    gb_ram = round(int(kb_match.group(1)) / (1024 * 1024))
-                    # Ajusta para tamanhos comerciais
+                    gb_ram_float = int(kb_match.group(1)) / (1024 * 1024)
                     tamanhos_ram = [1, 2, 3, 4, 6, 8, 12, 16, 24]
-                    gb_calculado = min(tamanhos_ram, key=lambda x: abs(x - gb_ram))
+                    # A RAM reportada é sempre menor que a física devido à RAM reservada pelo sistema.
+                    # Portanto, a RAM real é o menor tamanho comercial que seja >= à RAM reportada.
+                    gb_calculado = next((t for t in tamanhos_ram if t >= gb_ram_float), tamanhos_ram[-1])
                     ram_final = f"{gb_calculado} GB"
                 else:
                     ram_final = "N/A"
             except Exception:
                 ram_final = "N/A"
 
-            self.preencher_dados_tela(marca, modelo, nome_comercial, "N/A", ram_final, eid, imei1, imei2, meid, serie)
+            self.preencher_dados_tela(marca, modelo, nome_comercial, armazenamento_final, ram_final, eid, imei1, imei2, meid, serie)
             self.atualizar_status(status_final, cor_final)
             
         except Exception as e:
             self.atualizar_status("Falha de Comunicação: Aparelho offline ou Depuração desligada.", "red")
+
+    def iniciar_leitura_fastboot(self):
+        self.atualizar_status("Iniciando requisição Fastboot...", "yellow")
+        threading.Thread(target=self.extrair_dados_fastboot).start()
+
+    def extrair_dados_fastboot(self):
+        try:
+            self.atualizar_status("Acessando variáveis de hardware (fastboot getvar all)...", "yellow")
+            
+            # Fastboot no Windows cospe o output no stderr
+            result = subprocess.run([CAMINHO_FASTBOOT, 'getvar', 'all'], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            output = result.stderr + "\n" + result.stdout
+            
+            if "waiting for any device" in output.lower() or not output.strip() or "FAILED" in output:
+                self.atualizar_status("Nenhum aparelho em modo Fastboot detectado.", "red")
+                return
+
+            info_dict = {}
+            for linha in output.split('\n'):
+                # Exemplo: (bootloader) imei: 351234567890123
+                if ':' in linha:
+                    partes = linha.split(':', 1)
+                    chave = partes[0].replace('(bootloader)', '').strip().lower()
+                    valor = partes[1].strip()
+                    info_dict[chave] = valor
+
+            imei1 = info_dict.get('imei', 'N/A')
+            imei2 = info_dict.get('imei2', 'N/A')
+            serie = info_dict.get('serialno', 'N/A')
+            
+            ram_raw = info_dict.get('ro.ramsize', info_dict.get('ram', 'N/A'))
+            armazenamento_raw = info_dict.get('ro.emmc_size', info_dict.get('ro.ufs_size', 'N/A'))
+            
+            ram_final = "N/A"
+            if ram_raw != "N/A":
+                if 'GB' in ram_raw.upper():
+                    ram_final = ram_raw.upper().replace(' ', '')
+            
+            armazenamento_final = "N/A"
+            if armazenamento_raw != "N/A":
+                if 'GB' in armazenamento_raw.upper():
+                    armazenamento_final = armazenamento_raw.upper().replace(' ', '')
+            
+            marca = "N/A"
+            modelo = info_dict.get('product', info_dict.get('hw.board', 'Desconhecido'))
+            
+            if 'moto' in modelo.lower() or 'motorola' in output.lower():
+                marca = "Motorola"
+            elif 'xiaomi' in output.lower() or 'poco' in output.lower():
+                marca = "Xiaomi"
+            
+            nome_comercial = modelo
+            eid = "N/A"
+            meid = "N/A"
+            
+            if imei1 != "N/A":
+                self.atualizar_status("Leitura Fastboot concluída com sucesso.", "#00FF00")
+            else:
+                self.atualizar_status("Leitura Fastboot concluída, mas sem IMEI no log.", "yellow")
+
+            self.preencher_dados_tela(marca, modelo, nome_comercial, armazenamento_final, ram_final, eid, imei1, imei2, meid, serie)
+            
+        except FileNotFoundError:
+            self.atualizar_status("Falha Crítica: fastboot.exe ausente na pasta platform-tools.", "red")
+        except Exception as e:
+            self.atualizar_status("Falha de Comunicação Fastboot.", "red")
             
     def carregar_modelos(self, marca_digitada):
         texto = marca_digitada.strip()
