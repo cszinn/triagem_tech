@@ -77,9 +77,22 @@ class PainelInspecao(ctk.CTkFrame):
         self.input_obs = LabeledEntry(self, "📝 Observações Adicionais:")
         self.input_obs.pack(fill="x", padx=20, pady=(5, 15))
 
-        # Avarias
-        lbl_avarias = ctk.CTkLabel(self, text="⚠️ Avarias Identificadas:", font=ctk.CTkFont("Segoe UI", 14, "bold"))
-        lbl_avarias.pack(anchor="w", padx=20, pady=(10, 5))
+        # Avarias e Checkbox de filtro
+        frame_titulo_avarias = ctk.CTkFrame(self, fg_color="transparent")
+        frame_titulo_avarias.pack(fill="x", padx=20, pady=(10, 5))
+        frame_titulo_avarias.grid_columnconfigure(0, weight=1)
+        
+        lbl_avarias = ctk.CTkLabel(frame_titulo_avarias, text="⚠️ Avarias Identificadas:", font=ctk.CTkFont("Segoe UI", 14, "bold"))
+        lbl_avarias.grid(row=0, column=0, sticky="w")
+        
+        self.var_mostrar_selecionadas = ctk.BooleanVar(value=False)
+        self.chk_mostrar_selecionadas = ctk.CTkCheckBox(
+            frame_titulo_avarias, text="Ver só marcadas",
+            variable=self.var_mostrar_selecionadas,
+            command=self._filtrar_avarias,
+            font=ctk.CTkFont("Segoe UI", 12)
+        )
+        self.chk_mostrar_selecionadas.grid(row=0, column=1, sticky="e")
 
         # Busca + botão adicionar avaria
         frame_busca_avaria = ctk.CTkFrame(self, fg_color="transparent")
@@ -129,17 +142,31 @@ class PainelInspecao(ctk.CTkFrame):
             chk = ctk.CTkCheckBox(
                 self.frame_avarias, text=avaria,
                 variable=var, onvalue=avaria, offvalue="",
-                font=ctk.CTkFont("Segoe UI", 13)
+                font=ctk.CTkFont("Segoe UI", 13),
+                command=self._ao_clicar_avaria
             )
             chk.pack(anchor="w", pady=4)
             self.vars_avarias[avaria] = var
             self.widgets_avarias[avaria] = chk
 
+    def _ao_clicar_avaria(self):
+        # Se estiver no modo "só marcadas", ao desmarcar o item some na hora
+        if self.var_mostrar_selecionadas.get():
+            self._filtrar_avarias()
+
     def _filtrar_avarias(self, event=None):
         termo = self.input_busca_avaria.get()
         termo_norm = unicodedata.normalize('NFKD', termo).encode('ASCII', 'ignore').decode('utf-8').lower()
+        so_marcadas = self.var_mostrar_selecionadas.get()
 
         for avaria, chk in self.widgets_avarias.items():
+            var_associada = self.vars_avarias[avaria]
+            
+            # Filtro principal: ver só as marcadas
+            if so_marcadas and var_associada.get() == "":
+                chk.pack_forget()
+                continue
+
             avaria_norm = unicodedata.normalize('NFKD', avaria).encode('ASCII', 'ignore').decode('utf-8').lower()
 
             if not termo_norm:
