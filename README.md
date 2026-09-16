@@ -49,7 +49,7 @@ Os dados extraídos são exibidos na tela, permitindo complementação com inspe
 ## 📁 Estrutura do Repositório
 
 ```
-C:\Triagem\
+C:\triagem_tech-main\   (ou o nome da pasta que você extraiu)
 │
 ├── hub.py                  # Hub Central de Módulos (EXECUTE ESTE ARQUIVO)
 ├── painel_triagem.py       # Módulo 1: Auditoria e Triagem de Dispositivos
@@ -90,97 +90,29 @@ C:\Triagem\
 
 ## 🛠️ Guia de Instalação Completo
 
-### Passo 1 — Instalar o Python
+A instalação foi totalmente automatizada para facilitar a configuração em novos computadores da bancada.
 
-1. Acesse [python.org/downloads](https://www.python.org/downloads/) e baixe a versão mais recente do Python 3.
-2. Execute o instalador.
-3. **CRÍTICO:** Na primeira tela do instalador, marque a caixa **"Add Python to PATH"** antes de clicar em *Install Now*.
+### Passo Único — Executar o Instalador Automático
 
-   > ⚠️ Se esquecer de marcar essa opção, precisará reinstalar o Python ou configurar o PATH manualmente.
+1. Extraia o arquivo `.zip` baixado diretamente na unidade `C:\` (a pasta provavelmente ficará com o nome `C:\triagem_tech-main`).
+2. Acesse a pasta extraída pelo Explorador de Arquivos do Windows.
+3. Clique com o botão direito no arquivo **`pre-instalação.bat`** e selecione **"Executar como administrador"**.
+4. O script automatizado irá realizar todas as etapas abaixo sozinho:
+   - Instalação do Python 3.14 via Winget
+   - Instalação do Apple Devices (Drivers iOS necessários para comunicação com iPhones)
+   - Configuração do PATH do Windows para os motores USB (ADB e ideviceinfo)
+   - Atualização do PIP e instalação das bibliotecas do `requirements.txt`
+5. Ao finalizar, o script exibirá uma mensagem de sucesso. **REINICIE O COMPUTADOR** para aplicar o PATH e carregar os drivers.
+6. Após reiniciar, o sistema estará pronto para uso.
 
-4. Após a instalação, abra o **Prompt de Comando** (cmd) e confirme:
-   ```cmd
-   python --version
-   ```
-   Deve exibir algo como `Python 3.12.x`.
-
----
-
-### Passo 2 — Instalar as Dependências Python
-
-Com o Python instalado, abra o **Prompt de Comando** dentro da pasta `C:\Triagem` e execute:
-
-```cmd
-cd C:\Triagem
-python -m pip install -r requirements.txt
-```
-
-Isso instalará automaticamente:
-- **`customtkinter`** — framework da interface gráfica moderna
-- **`autocorrect`** — motor de autocorreção ortográfica do campo de observações
-- **`reportlab`** — geração das etiquetas
-- **`Pillow`** — processamento de imagens para etiquetas térmicas
-- **`qrcode`** — geração de QR Code nas etiquetas
-- **`requests`** — comunicação com a API de estoque
-- **`pywin32`** — impressão direta via Windows (impressoras térmicas)
-
----
-
-### Passo 3 — Driver para iPhone: Suporte Apple
-
-O Windows precisa de um driver instalado para reconhecer iPhones na porta USB. Existem duas formas de obter esse driver:
-
-#### ✅ Opção Recomendada — Apple Devices (Microsoft Store)
-
-É a versão oficial e mais leve. Instala **apenas os drivers USB**, sem os serviços e processos secundários do iTunes completo.
-
-1. Abra a **Microsoft Store** (menu Iniciar → "Microsoft Store").
-2. Pesquise por **"Apple Devices"** (ou "Dispositivos Apple").
-3. Clique em **Instalar** e aguarde.
-4. Reinicie o computador.
-
-#### Opção Alternativa — iTunes Clássico
-
-Se o Apple Devices não estiver disponível na sua região ou versão do Windows:
-
-1. Acesse [apple.com/br/itunes](https://www.apple.com/br/itunes/).
-2. Baixe e instale o iTunes.
-3. Após a instalação, o driver **Apple Mobile Device Support** é registrado automaticamente no Windows.
-
-> **Por que o iTunes é necessário para iPhone?**
-> O protocolo de comunicação da Apple (`usbmuxd`) exige que o driver **Apple Mobile Device Support** esteja instalado e rodando no Windows. O motor `ideviceinfo.exe` — que vem na pasta `platform-tools` — se comunica com esse driver para ler os dados do aparelho. Sem ele, o iPhone simplesmente não é reconhecido.
-
----
-
-### Passo 4 — Configurar o PATH do Windows
-
-Esta é a etapa que permite o Python encontrar os executáveis `adb.exe` e `ideviceinfo.exe` em qualquer diretório.
-
-![Guia de Configuração do PATH](docs/images/configurar_path.jpg)
-
-**Siga os passos:**
-
-1. Pressione `Win` e digite **"variáveis de ambiente"**, depois clique em **"Editar as variáveis de ambiente do sistema"**.
-
-2. Na janela **Propriedades do Sistema**, clique no botão **"Variáveis de Ambiente..."**.
-
-3. Na seção **"Variáveis do sistema"** (parte de baixo), localize a variável **`Path`** e clique em **"Editar..."**.
-
-4. Na janela de edição, clique em **"Novo"** e adicione exatamente este caminho:
-   ```
-   C:\Triagem\platform-tools
-   ```
-
-5. Clique **OK** em todas as janelas para salvar.
-
-6. **Feche e reabra** qualquer terminal ou editor de código aberto. O Windows carrega o PATH apenas na abertura do terminal.
-
-**Para verificar se funcionou**, abra um novo cmd e execute:
-```cmd
-adb version
-ideviceinfo --version
-```
-Ambos devem exibir informações de versão sem erros.
+> **O que o script instala via Python (requirements.txt)?**
+> - **`customtkinter`** — framework da interface gráfica moderna
+> - **`autocorrect`** — motor de autocorreção ortográfica
+> - **`reportlab`** — geração das etiquetas
+> - **`Pillow`** — processamento de imagens para etiquetas térmicas
+> - **`qrcode`** — geração de QR Code nas etiquetas
+> - **`requests`** — comunicação com a API de estoque
+> - **`pywin32`** — impressão direta via Windows
 
 ---
 
@@ -189,7 +121,7 @@ Ambos devem exibir informações de versão sem erros.
 Navegue até a pasta do projeto e execute o painel principal:
 
 ```cmd
-cd C:\Triagem
+cd C:\triagem_tech-main
 python hub.py
 ```
 
@@ -371,7 +303,7 @@ Quando o servidor de produção não estiver disponível, é possível testar o 
 **1. Inicie o servidor mock** (num terminal separado):
 
 ```cmd
-cd C:\Triagem
+cd C:\triagem_tech-main
 python servidor_mock.py
 ```
 
@@ -426,9 +358,9 @@ Reinicie o app. Nenhuma outra alteração é necessária.
 
 ### ❌ "Falha Crítica: Motor ideviceinfo ausente no PATH"
 O executável `ideviceinfo.exe` não foi encontrado. Verifique:
-- Se `C:\Triagem\platform-tools` foi adicionado ao PATH do **sistema** (não ao PATH do usuário).
-- Se o terminal foi reaberto **após** adicionar ao PATH.
-- Se o arquivo `ideviceinfo.exe` está de fato dentro de `C:\Triagem\platform-tools\`.
+- Se a pasta `platform-tools` (dentro da pasta do projeto) foi adicionada ao PATH do **sistema**.
+- Se o terminal foi reaberto **após** a instalação.
+- Se o arquivo `ideviceinfo.exe` está de fato dentro da pasta `platform-tools`.
 
 ### ❌ iPhone não reconhecido / "Falha de Comunicação"
 - Verifique se **Apple Devices** ou **iTunes** está instalado.
@@ -460,13 +392,13 @@ python -m pip install -r requirements.txt
 ## 📦 Resumo Rápido de Instalação
 
 ```cmd
-:: 1. Instale Python 3.10+ com "Add to PATH" marcado
-:: 2. Instale Apple Devices (Microsoft Store) para suporte a iPhone
-:: 3. Adicione C:\Triagem\platform-tools ao PATH do sistema
-:: 4. No cmd:
+:: 1. Clique com o botão direito em pre-instalação.bat
+:: 2. Selecione "Executar como administrador"
+:: 3. Aguarde o fim da instalação automática
+:: 4. Reinicie o Computador
+:: 5. Navegue até a pasta e abra o sistema:
 
-cd C:\Triagem
-pip install -r requirements.txt
+cd C:\triagem_tech-main
 python hub.py
 ```
 
