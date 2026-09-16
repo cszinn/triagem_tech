@@ -1,39 +1,33 @@
-import customtkinter as ctk
-import subprocess
+"""
+painel_triagem.py — Sistema de Triagem v2.0
+Janela principal que integra todos os painéis e serviços.
+"""
+
 import threading
-import time
 import os
-import io
-import json
-import qrcode
 import re
-import unicodedata
-import difflib
-
-
-from PIL import Image, ImageDraw, ImageFont
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
-from reportlab.lib.utils import ImageReader
-from reportlab.graphics.barcode import code128
+import customtkinter as ctk
 from autocorrect import Speller
-from datetime import datetime
-import requests 
 
+import config as cfg_module
+from motores import ios, android, fastboot, radar_usb
+from servicos import api_client
+from servicos.impressao import (
+    construir_imagem_etiqueta, imprimir_imagem_win32,
+    WIN32_DISPONIVEL, listar_impressoras
+)
+from ui.painel_hardware import PainelHardware
+from ui.painel_inspecao import PainelInspecao
+from ui.painel_log import PainelLog
+from ui.barra_acoes import BarraAcoes
+from ui.janela_etiqueta import JanelaEtiqueta
 
-# Impressão direta via Windows GDI
-try:
-    import win32print
-    import win32ui
-    import win32con
-    import win32gui
-    from PIL import ImageWin
-    WIN32_DISPONIVEL = True
-except ImportError:
-    WIN32_DISPONIVEL = False
+# Configuração do Tema Visual
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-# Corretor ortográfico inicializado em background para não travar o app
-corretor_pt = lambda x: x  # passthrough até o dicionário carregar
+# Corretor ortográfico (carrega em background)
+corretor_pt = lambda x: x
 
 def _inicializar_speller():
     global corretor_pt
@@ -41,394 +35,471 @@ def _inicializar_speller():
         s = Speller(lang='pt')
         corretor_pt = s
     except Exception:
-        pass  # mantém o passthrough se falhar
+        pass
 
 threading.Thread(target=_inicializar_speller, daemon=True).start()
 
 
-DIRETORIO_ATUAL = os.getcwd()
-PASTA_TOOLS = os.path.join(DIRETORIO_ATUAL, "platform-tools")
-
-# Define o caminho exato dos executáveis
-CAMINHO_ADB = os.path.join(PASTA_TOOLS, "adb.exe")
-CAMINHO_FASTBOOT = os.path.join(PASTA_TOOLS, "fastboot.exe")
-CAMINHO_IDEVICEINFO = os.path.join(PASTA_TOOLS, "ideviceinfo.exe")
-CAMINHO_IDEVICEID = os.path.join(PASTA_TOOLS, "idevice_id.exe")
-
-
-
-# Configuração do Tema Visual
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
-# ctk.deactivate_automatic_dpi_awareness()
-
 class SistemaTriagem(ctk.CTk):
-    
-    # --- CONFIGURAÇÕES DE IMPRESSÃO ---
-    
-    _CONFIG_PATH = "config.json"
-    # 1. Concentre TODAS as constantes aqui
-    _CONFIG_PADRAO = {
-        # Configurações da Impressora
-        "impressora": "4BARCODE 4B-2054L",
-        "largura_mm": 58.6,
-        "altura_mm": 40.0,
-        "offset_x_mm": 0.0,
-        "offset_y_mm": 2.0,
-        "patrimonio_num": 10,
-        "escala_conteudo": 1.2,
-        
-        # Configurações de Rede / API
-        "api_url": "https://useful-gecko-present.ngrok-free.app/api",
-        
-        # Configurações da Janela / UI
-        "app_titulo": "Instituto ITI - Triagem Receita Federal",
-        "app_geometria": "1920x1080"
-    }
-        
+
     def __init__(self):
         super().__init__()
 
-        self._cfg = self._carregar_config()
-
-        # 3. Aplica as configurações diretamente do dicionário
+        self._cfg = cfg_module.carregar()
         self.title(self._cfg["app_titulo"])
         self.geometry(self._cfg["app_geometria"])
         self.after(100, lambda: self.state("zoomed"))
-        # Número de patrimônio (recuperado do arquivo ou default 75)
-        self._patrimonio_num = self._cfg.get("patrimonio_num", 75)
-        
+
+        # Layout principal: 3 colunas
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure(2, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
-        self.criar_cabecalho()
-        self.criar_painel_extracao()
-        self.criar_painel_manual()
-        self.criar_painel_log() 
-        self.criar_rodape()
-        
-        self.configurar_atalhos()
-        
-        self.atualizar_status("Sistema iniciado. Aguardando conexão USB.", "gray")
-        self.iniciar_radar_usb()
-        self.carregar_dominios()
+        # --- Cabeçalho ---
+        self._criar_cabecalho()
 
-    def criar_cabecalho(self):
+        # --- Painéis ---
+        self.painel_hw = PainelHardware(
+            self,
+            callbacks={
+                "ler_ios": self._iniciar_leitura_ios,
+                "ler_android": self._iniciar_leitura_android,
+                "ler_fastboot": self._iniciar_leitura_fastboot,
+                "marca_selecionada": self._carregar_modelos,
+                "modelo_selecionado": self._carregar_modelos_fisicos,
+                "modo_manual": self._alternar_modo_manual,
+            }
+        )
+        self.painel_hw.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+
+        self.painel_insp = PainelInspecao(
+            self,
+            callbacks={
+                "cadastrar_avaria": self._cadastrar_nova_avaria,
+            }
+        )
+        self.painel_insp.grid(row=2, column=1, padx=10, pady=5, sticky="nsew")
+
+        self.painel_log = PainelLog(self)
+        self.painel_log.grid(row=2, column=2, rowspan=2, padx=10, pady=5, sticky="nsew")
+
+        # --- Rodapé ---
+        self.barra = BarraAcoes(
+            self,
+            patrimonio_num=self._cfg.get("patrimonio_num", 10),
+            callbacks={
+                "limpar": self._limpar_tela,
+                "copiar_excel": self._exportar_para_clipboard,
+                "salvar_api": self._enviar_para_api,
+                "editar_etiqueta": self._abrir_janela_editar_etiqueta,
+                "calibrar": self._abrir_calibracao,
+            }
+        )
+        self.barra.grid(row=3, column=0, columnspan=2, sticky="ew")
+
+        # --- Atalhos de teclado ---
+        self._configurar_atalhos()
+
+        # --- Inicialização ---
+        self._status("Sistema iniciado. Aguardando conexão USB.", "gray")
+        self._iniciar_radar_usb()
+        self._carregar_dominios()
+
+    # =================================================================
+    #  CABEÇALHO
+    # =================================================================
+    def _criar_cabecalho(self):
         try:
             from PIL import Image
-            import os
             logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_hq_cropped.png")
-            logo_img = ctk.CTkImage(light_image=Image.open(logo_path),
-                                    dark_image=Image.open(logo_path),
-                                    size=(312, 80))
+            logo_img = ctk.CTkImage(
+                light_image=Image.open(logo_path),
+                dark_image=Image.open(logo_path),
+                size=(312, 80)
+            )
             self.lbl_titulo = ctk.CTkLabel(self, image=logo_img, text="")
-        except Exception as e:
-            self.lbl_titulo = ctk.CTkLabel(self, text="Auditoria e Triagem de Dispositivos", font=ctk.CTkFont(size=24, weight="bold"))
+        except Exception:
+            self.lbl_titulo = ctk.CTkLabel(
+                self, text="Auditoria e Triagem de Dispositivos",
+                font=ctk.CTkFont(size=24, weight="bold")
+            )
         self.lbl_titulo.grid(row=0, column=0, columnspan=3, pady=(15, 5))
-        
-        self.lbl_status = ctk.CTkLabel(self, text="Inicializando motor de triagem...", text_color="gray", font=ctk.CTkFont(size=14))
-        self.lbl_status.grid(row=1, column=0, columnspan=3, pady=(0, 10))
-        self.btn_atualizar_dados = ctk.CTkButton(
-            self, 
-            text="🔄 Atualizar Listas", 
-            width=140, 
-            height=32,
-            fg_color="#444444", 
-            hover_color="#555555", 
-            font=ctk.CTkFont(weight="bold"),
-            command=self.carregar_dominios
+
+        self.lbl_status = ctk.CTkLabel(
+            self, text="Inicializando motor de triagem...",
+            text_color="gray", font=ctk.CTkFont(size=14)
         )
-        self.btn_atualizar_dados.place(relx=0.98, rely=0.02, anchor="ne")
-        
+        self.lbl_status.grid(row=1, column=0, columnspan=3, pady=(0, 10))
+
+        # Botão atualizar listas (canto superior direito)
+        self.btn_atualizar = ctk.CTkButton(
+            self, text="🔄 Atualizar Listas", width=140, height=32,
+            fg_color="#444444", hover_color="#555555",
+            font=ctk.CTkFont(weight="bold"),
+            command=self._carregar_dominios
+        )
+        self.btn_atualizar.place(relx=0.98, rely=0.02, anchor="ne")
+
+        # Botão voltar ao hub (canto superior esquerdo)
         self.btn_sair = ctk.CTkButton(
-            self, 
-            text="🔙 Voltar ao Hub", 
-            width=140, 
-            height=32,
-            fg_color="#8A1111", 
-            hover_color="#5C0B0B", 
+            self, text="🔙 Voltar ao Hub", width=140, height=32,
+            fg_color="#8A1111", hover_color="#5C0B0B",
             font=ctk.CTkFont(weight="bold"),
             command=self.destroy
         )
         self.btn_sair.place(relx=0.02, rely=0.02, anchor="nw")
-        self.bind("<F5>", lambda e: self.carregar_dominios())
-    
-    def criar_combo_leitura(self, parent, texto, comando_selecao=None):
-        lbl = ctk.CTkLabel(parent, text=texto)
-        lbl.pack(anchor="w", padx=20, pady=(2,0)) 
-        
-        combo = ctk.CTkComboBox(
-            parent, 
-            values=["Carregando..."], 
-            state="disabled", 
-            text_color="#00FF00", 
-            font=ctk.CTkFont(weight="bold"), 
-            command=comando_selecao # Dispara se ele clicar na lista
-        )
-        combo.pack(fill="x", padx=20, pady=(0, 2))
-        
-        # Dispara também se o usuário digitar livremente e sair do campo
-        if comando_selecao:
-            combo._entry.bind("<FocusOut>", lambda e: comando_selecao(combo.get()))
-            combo._entry.bind("<Return>", lambda e: comando_selecao(combo.get()))
-        self.aplicar_filtro_dropdown(combo)
-        return combo
 
-    def criar_painel_extracao(self):
-        frame_auto = ctk.CTkFrame(self)
-        frame_auto.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+        self.bind("<F5>", lambda e: self._carregar_dominios())
 
-        lbl_sec = ctk.CTkLabel(frame_auto, text="Leitura USB (Hardware)", font=ctk.CTkFont(size=18, weight="bold"))
-        lbl_sec.pack(pady=10)
+    # =================================================================
+    #  STATUS / LOG
+    # =================================================================
+    def _status(self, mensagem, cor="gray"):
+        """Atualiza a barra de status e registra no log."""
+        self.lbl_status.configure(text=mensagem, text_color=cor)
+        self.painel_log.adicionar(mensagem)
 
-        self.btn_ios = ctk.CTkButton(frame_auto, text="Ler Aparelho (iPhone / iOS)", fg_color="#4B4B4B", hover_color="#333333", command=self.iniciar_leitura_ios)
-        self.btn_ios.pack(pady=5, padx=20, fill="x")
+    def _status_thread(self, mensagem, cor="gray"):
+        """Versão thread-safe do _status — usa self.after()."""
+        self.after(0, lambda: self._status(mensagem, cor))
 
-        self.btn_android = ctk.CTkButton(frame_auto, text="Ler Aparelho (Android ADB)", fg_color="#1f6aa5", command=self.iniciar_leitura_android)
-        self.btn_android.pack(pady=5, padx=20, fill="x")
+    # =================================================================
+    #  RADAR USB
+    # =================================================================
+    def _iniciar_radar_usb(self):
+        threading.Thread(
+            target=radar_usb.monitorar,
+            args=(self._status_thread,),
+            daemon=True
+        ).start()
 
-        self.btn_fastboot = ctk.CTkButton(frame_auto, text="Ler Aparelho (Fastboot)", fg_color="#E67E22", hover_color="#D35400", command=self.iniciar_leitura_fastboot)
-        self.btn_fastboot.pack(pady=5, padx=20, fill="x")
+    # =================================================================
+    #  LEITURA DE DISPOSITIVOS
+    # =================================================================
+    def _iniciar_leitura_ios(self):
+        self._status("Iniciando varredura profunda no iOS...", "yellow")
+        threading.Thread(target=self._extrair_ios, daemon=True).start()
 
-        self.switch_manual = ctk.CTkSwitch(frame_auto, text="Modo Manual (Habilitar Leitor de Código)", command=self.alternar_modo_manual)
-        self.switch_manual.pack(pady=(15, 5), padx=20, anchor="w")
-
-        self.campo_marca = self.criar_combo_leitura(
-            frame_auto, 
-            "Marca:", 
-            comando_selecao=self.carregar_modelos
-        )
-        
-        # Quando o Nome Comercial for escolhido, dispara a busca de Modelos Físicos
-        self.campo_nome_comercial = self.criar_combo_leitura(frame_auto, "Nome Comercial:", comando_selecao=self.carregar_modelos_fisicos)
-        
-        self.campo_modelo = self.criar_combo_leitura(frame_auto, "Modelo Físico (Hardware ID):")
-        
-        # --- Modificação: Armazenamento e RAM Lado a Lado ---
-        frame_arm_ram = ctk.CTkFrame(frame_auto)
-        frame_arm_ram.pack(fill="x", padx=20, pady=(2, 0))
-        frame_arm_ram.grid_columnconfigure(0, weight=1)
-        frame_arm_ram.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(frame_arm_ram, text="Armazenamento:").grid(row=0, column=0, sticky="w")
-        self.campo_armazenamento = ctk.CTkEntry(frame_arm_ram, state="disabled", text_color="#00FF00", font=ctk.CTkFont(weight="bold"))
-        self.campo_armazenamento.grid(row=1, column=0, sticky="ew", padx=(0, 5))
-
-        ctk.CTkLabel(frame_arm_ram, text="Memória RAM:").grid(row=0, column=1, sticky="w")
-        self.campo_ram = ctk.CTkEntry(frame_arm_ram, state="disabled", text_color="#00FF00", font=ctk.CTkFont(weight="bold"))
-        self.campo_ram.grid(row=1, column=1, sticky="ew", padx=(5, 0))
-        # ----------------------------------------------------
-
-        self.campo_eid = self.criar_campo_leitura(frame_auto, "EID (eSIM):")
-        self.campo_imei1 = self.criar_campo_leitura(frame_auto, "IMEI 1:")
-        self.campo_imei2 = self.criar_campo_leitura(frame_auto, "IMEI 2:")
-        self.campo_meid = self.criar_campo_leitura(frame_auto, "MEID:")
-        self.campo_serie = self.criar_campo_leitura(frame_auto, "Número de Série (S/N):")
-
-    def criar_painel_manual(self):
-        frame_manual = ctk.CTkScrollableFrame(self)
-        frame_manual.grid(row=2, column=1, padx=10, pady=5, sticky="nsew")
-
-        lbl_sec = ctk.CTkLabel(frame_manual, text="Inspeção Física", font=ctk.CTkFont(size=18, weight="bold"))
-        lbl_sec.pack(pady=10)
-
-        # --- ID do Responsável Técnico ---
-        self.input_id_tecnico = self.criar_campo_entrada(frame_manual, "ID Responsável Técnico:")
-        self.input_id_tecnico.insert(0, "1")
-        
-        lbl_caixa = ctk.CTkLabel(frame_manual, text="Caixa de Recebimento:")
-        lbl_caixa.pack(anchor="w", padx=20, pady=(5,0))
-        self.combo_caixa = ctk.CTkComboBox(frame_manual, values=["Carregando..."]) 
-        self.combo_caixa.pack(fill="x", padx=20, pady=(0, 5))
-
-        lbl_cor = ctk.CTkLabel(frame_manual, text="Cor do Aparelho:")
-        lbl_cor.pack(anchor="w", padx=20, pady=(5,0))
-        self.combo_cor = ctk.CTkComboBox(frame_manual, values=["Carregando..."])
-        self.combo_cor.pack(fill="x", padx=20, pady=(0, 5))
-        
-        # --- Chips e Peso Lado a Lado ---
-        frame_chips_peso = ctk.CTkFrame(frame_manual)
-        frame_chips_peso.pack(fill="x", padx=20, pady=(5, 5))
-        frame_chips_peso.grid_columnconfigure(0, weight=1)
-        frame_chips_peso.grid_columnconfigure(1, weight=1)
-        frame_chips_peso.grid_columnconfigure(2, weight=1)
-
-        ctk.CTkLabel(frame_chips_peso, text="Chips Aceit.:").grid(row=0, column=0, sticky="w")
-        self.input_qnt_chips = ctk.CTkEntry(frame_chips_peso)
-        self.input_qnt_chips.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-
-        ctk.CTkLabel(frame_chips_peso, text="Chips Inst.:").grid(row=0, column=1, sticky="w")
-        self.input_chips_inst = ctk.CTkEntry(frame_chips_peso)
-        self.input_chips_inst.grid(row=1, column=1, sticky="ew", padx=(4, 4))
-
-        ctk.CTkLabel(frame_chips_peso, text="Peso (g):").grid(row=0, column=2, sticky="w")
-        self.input_peso = ctk.CTkEntry(frame_chips_peso)
-        self.input_peso.grid(row=1, column=2, sticky="ew", padx=(4, 0))
-        
-        lbl_estado = ctk.CTkLabel(frame_manual, text="Estado Físico:")
-        lbl_estado.pack(anchor="w", padx=20, pady=(5,0))
-        self.combo_estado = ctk.CTkComboBox(frame_manual, values=["Carregando..."])
-        self.combo_estado.pack(fill="x", padx=20, pady=(0, 5))
-        
-        # --- Condição e Acesso Lado a Lado ---
-        frame_cond_acesso = ctk.CTkFrame(frame_manual)
-        frame_cond_acesso.pack(fill="x", padx=20, pady=(5, 5))
-        frame_cond_acesso.grid_columnconfigure(0, weight=1)
-        frame_cond_acesso.grid_columnconfigure(1, weight=1)
-
-        lbl_condicao = ctk.CTkLabel(frame_cond_acesso, text="Condição de Func.:")
-        lbl_condicao.grid(row=0, column=0, sticky="w")
-        self.combo_condicao = ctk.CTkComboBox(frame_cond_acesso, values=["Carregando..."])
-        self.combo_condicao.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-
-        lbl_acesso = ctk.CTkLabel(frame_cond_acesso, text="Estado de Acesso:")
-        lbl_acesso.grid(row=0, column=1, sticky="w")
-        self.combo_acesso = ctk.CTkComboBox(frame_cond_acesso, values=["Carregando..."])
-        self.combo_acesso.grid(row=1, column=1, sticky="ew", padx=(4, 0))
-
-        # --- Observações Adicionais ---
-        self.input_obs = self.criar_campo_entrada(frame_manual, "Observações Adicionais:")
-
-        # --- Avarias Identificadas ---
-        lbl_avarias = ctk.CTkLabel(frame_manual, text="Avarias Identificadas:")
-        lbl_avarias.pack(anchor="w", padx=20, pady=(10,0))
-        
-        # NOVO: Frame para abrigar a busca e o botão lado a lado
-        frame_busca_avaria = ctk.CTkFrame(frame_manual)
-        frame_busca_avaria.pack(fill="x", padx=20, pady=(0, 5))
-        frame_busca_avaria.grid_columnconfigure(0, weight=1) # O campo de texto estica
-        frame_busca_avaria.grid_columnconfigure(1, weight=0) # O botão usa só o necessário
-        
-        self.input_busca_avaria = ctk.CTkEntry(frame_busca_avaria, placeholder_text="Pesquisar ou adicionar (ex: conector)...")
-        self.input_busca_avaria.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.input_busca_avaria.bind("<KeyRelease>", self.filtrar_avarias)
-        
-        self.btn_add_avaria = ctk.CTkButton(
-            frame_busca_avaria, text="+", width=30,
-            fg_color="#1f6aa5", hover_color="#144870",
-            font=ctk.CTkFont(weight="bold", size=16),
-            command=self.cadastrar_nova_avaria # Aciona a nova função
-        )
-        self.btn_add_avaria.grid(row=0, column=1, sticky="e")
-        
-        self.frame_avarias = ctk.CTkScrollableFrame(frame_manual, height=60)
-        self.frame_avarias.pack(fill="x", padx=20, pady=(0, 5))
-        self.vars_avarias = {}
-        self.widgets_avarias = {}
-        combos_manuais = [self.combo_caixa, self.combo_cor, self.combo_estado, self.combo_condicao, self.combo_acesso]
-        for c in combos_manuais:
-            self.aplicar_filtro_dropdown(c)
-           
-    def criar_painel_log(self):
-        frame_log = ctk.CTkFrame(self)
-        frame_log.grid(row=2, column=2, rowspan=2, padx=10, pady=5, sticky="nsew")
-        
-        lbl_sec = ctk.CTkLabel(frame_log, text="Log de Operação", font=ctk.CTkFont(size=18, weight="bold"))
-        lbl_sec.pack(pady=10)
-
-        self.caixa_log = ctk.CTkTextbox(frame_log, state="disabled", wrap="word", font=ctk.CTkFont(family="Consolas", size=12))
-        self.caixa_log.pack(expand=True, fill="both", padx=10, pady=(0, 10))
-
-    def criar_rodape(self):
-            # 1. Cria um frame invisível para abrigar os 4 botões na mesma linha
-            frame_botoes = ctk.CTkFrame(self)
-            frame_botoes.grid(row=3, column=0, columnspan=3, pady=(10, 5), padx=10, sticky="ew")
-            
-            # 2. Configura 4 colunas com pesos iguais dentro deste frame
-            for i in range(4):
-                frame_botoes.grid_columnconfigure(i, weight=1)
-
-            self.btn_limpar = ctk.CTkButton(frame_botoes, text="Limpar Campos", fg_color="#8A1111", hover_color="#5C0B0B", command=self.limpar_tela)
-            self.btn_limpar.grid(row=0, column=0, padx=10, sticky="ew")
-
-            self.btn_copiar = ctk.CTkButton(frame_botoes, text="COPIAR PARA EXCEL", font=ctk.CTkFont(size=16, weight="bold"), height=40, fg_color="#2FA572", hover_color="#248259", command=self.exportar_para_clipboard)
-            self.btn_copiar.grid(row=0, column=1, padx=10, sticky="ew")
-
-            # --- O NOVO BOTÃO DE SALVAR AQUI! ---
-            self.btn_salvar = ctk.CTkButton(frame_botoes, text="SALVAR NO SISTEMA", font=ctk.CTkFont(size=16, weight="bold"), height=40, fg_color="#A52A2A", hover_color="#8B2222", command=self.enviar_para_api)
-            self.btn_salvar.grid(row=0, column=2, padx=10, sticky="ew")
-            
-            self.btn_imprimir = ctk.CTkButton(frame_botoes, text="EDITAR / EXPORTAR ETIQUETA", font=ctk.CTkFont(size=16, weight="bold"), height=40, fg_color="#1f6aa5", hover_color="#144870", command=self.abrir_janela_editar_etiqueta)
-            self.btn_imprimir.grid(row=0, column=3, padx=(10, 60), sticky="ew") # Margem direita para não encavalar na engrenagem
-
-            self.btn_calibrar = ctk.CTkButton(frame_botoes, text="⚙", width=40, height=40,
-                font=ctk.CTkFont(size=20), fg_color="#444", hover_color="#666",
-                command=self.abrir_calibracao)
-            self.btn_calibrar.grid(row=0, column=3, padx=(0, 10), sticky="e")
-            
-            # --- Controle de Nº de Patrimônio (Mantido Exatamente Igual) ---
-            frame_pat = ctk.CTkFrame(self)
-            frame_pat.grid(row=4, column=0, columnspan=3, pady=(0, 12), padx=20, sticky="ew")
-            frame_pat.grid_columnconfigure(0, weight=1)
-            frame_pat.grid_columnconfigure(1, weight=0)
-            frame_pat.grid_columnconfigure(2, weight=0)
-            frame_pat.grid_columnconfigure(3, weight=0)
-            frame_pat.grid_columnconfigure(4, weight=1)
-            
-            lbl_pat = ctk.CTkLabel(frame_pat, text="Nº de Patrimônio:", font=ctk.CTkFont(size=14, weight="bold"))
-            lbl_pat.grid(row=0, column=0, sticky="e", padx=(0, 8))
-            
-            self.btn_pat_menos = ctk.CTkButton(
-                frame_pat, text="−", width=36, height=36,
-                font=ctk.CTkFont(size=20, weight="bold"),
-                fg_color="#3a3a3a", hover_color="#555555",
-                command=self._patrimonio_decrementar
-            )
-            self.btn_pat_menos.grid(row=0, column=1, padx=(0, 4))
-            
-            self.entry_patrimonio = ctk.CTkEntry(
-                frame_pat, width=130, height=36,
-                font=ctk.CTkFont(size=15, weight="bold"),
-                justify="center"
-            )
-            self.entry_patrimonio.grid(row=0, column=2, padx=4)
-            self.entry_patrimonio.insert(0, f"ITI TECH-{self._patrimonio_num:03d}")
-            self.entry_patrimonio.bind("<Up>",    lambda e: self._patrimonio_incrementar())
-            self.entry_patrimonio.bind("<Down>",  lambda e: self._patrimonio_decrementar())
-            self.entry_patrimonio.bind("<FocusOut>", self._patrimonio_validar_entrada)
-            self.entry_patrimonio.bind("<Return>", self._patrimonio_validar_entrada)
-            
-            self.btn_pat_mais = ctk.CTkButton(
-                frame_pat, text="+", width=36, height=36,
-                font=ctk.CTkFont(size=20, weight="bold"),
-                fg_color="#1f6aa5", hover_color="#144870",
-                command=self._patrimonio_incrementar
-            )
-            self.btn_pat_mais.grid(row=0, column=3, padx=(4, 0))
-            
-            lbl_pat_info = ctk.CTkLabel(
-                frame_pat, 
-                text="Use +/−, setas ↑↓ ou digite diretamente (prefixo \"ITI TECH-\" é fixo)",
-                font=ctk.CTkFont(size=11), text_color="gray"
-            )
-            lbl_pat_info.grid(row=0, column=4, sticky="w", padx=(12, 0))
-    
-    def _carregar_config(self) -> dict:
-            try:
-                if os.path.exists(self._CONFIG_PATH):
-                    with open(self._CONFIG_PATH, "r", encoding="utf-8") as f:
-                        dados = json.load(f)
-                        # Mescla os padrões com o que veio do arquivo JSON
-                        return {**self._CONFIG_PADRAO, **dados}
-            except Exception:
-                pass
-            return dict(self._CONFIG_PADRAO)
-
-    def _salvar_config_impressora(self):
+    def _extrair_ios(self):
         try:
-            with open(self._CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._cfg, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            self.atualizar_status(f"Erro ao salvar config: {e}", "red")
+            self._status_thread("Extraindo dicionário de Hardware (Dump Completo)...", "yellow")
+            dados = ios.extrair()
+            self._status_thread("Calculando capacidade de disco rígido...", "yellow")
+            self.after(0, lambda: self.painel_hw.preencher_dados(dados))
+            self._status_thread("Leitura concluída com sucesso.", "#00FF00")
+        except FileNotFoundError:
+            self._status_thread("Falha Crítica: Motor ideviceinfo ausente no PATH.", "red")
+        except Exception:
+            self._status_thread("Falha de Comunicação: Dispositivo bloqueado ou cabo com defeito.", "red")
 
-    def abrir_calibracao(self):
-        """Abre janela de calibração das dimensões de impressão."""
+    def _iniciar_leitura_android(self):
+        self._status("Iniciando requisição de interface ADB...", "yellow")
+        threading.Thread(target=self._extrair_android, daemon=True).start()
+
+    def _extrair_android(self):
+        try:
+            self._status_thread("Acessando propriedades do sistema (getprop)...", "yellow")
+            dados = android.extrair()
+
+            if dados.get("imei_encontrado"):
+                status_msg = f"Leitura ADB concluída: {dados['marca']} {dados['modelo']}"
+                cor = "#00FF00"
+            else:
+                status_msg = f"Leitura parcial ({dados['marca']} {dados['modelo']}): IMEI bloqueado pelo Android 10+"
+                cor = "yellow"
+
+            self.after(0, lambda: self.painel_hw.preencher_dados(dados))
+            self._status_thread(status_msg, cor)
+        except Exception:
+            self._status_thread("Falha de Comunicação: Aparelho offline ou Depuração desligada.", "red")
+
+    def _iniciar_leitura_fastboot(self):
+        self._status("Iniciando requisição Fastboot...", "yellow")
+        threading.Thread(target=self._extrair_fastboot, daemon=True).start()
+
+    def _extrair_fastboot(self):
+        try:
+            self._status_thread("Acessando variáveis de hardware (fastboot getvar all)...", "yellow")
+            dados = fastboot.extrair()
+
+            if dados.get("imei_encontrado"):
+                self._status_thread("Leitura Fastboot concluída com sucesso.", "#00FF00")
+            else:
+                self._status_thread("Leitura Fastboot concluída, mas sem IMEI no log.", "yellow")
+
+            self.after(0, lambda: self.painel_hw.preencher_dados(dados))
+        except FileNotFoundError:
+            self._status_thread("Falha Crítica: fastboot.exe ausente na pasta platform-tools.", "red")
+        except ConnectionError as e:
+            self._status_thread(str(e), "red")
+        except Exception:
+            self._status_thread("Falha de Comunicação Fastboot.", "red")
+
+    # =================================================================
+    #  MODO MANUAL
+    # =================================================================
+    def _alternar_modo_manual(self, ativado: bool):
+        self.painel_hw.set_modo_manual(ativado)
+        if ativado:
+            self._status("Modo Manual: Identificadores liberados para leitor de código.", "yellow")
+            self.painel_hw.campo_marca.focus()
+        else:
+            self._status("Modo Manual Desativado. Todos os campos blindados.", "gray")
+
+    # =================================================================
+    #  CARREGAR DADOS DA API
+    # =================================================================
+    def _carregar_dominios(self):
+        self._status("Carregando domínios da API...", "yellow")
+
+        def request():
+            try:
+                dominios = api_client.carregar_dominios(self._cfg["api_url"])
+                self.after(0, lambda: self._aplicar_dominios(dominios))
+                self._status_thread("Domínios carregados com sucesso.", "gray")
+            except Exception as e:
+                self._status_thread(f"Aviso: Falha ao carregar domínios da API. Erro: {e}", "red")
+
+        threading.Thread(target=request, daemon=True).start()
+
+    def _aplicar_dominios(self, dominios: dict):
+        """Aplica os domínios a todos os painéis."""
+        self.painel_hw.campo_marca.set_values(dominios.get("marcas", []))
+        self.painel_hw.campo_nome_comercial.set_values(dominios.get("modelos", []))
+        self.painel_insp.popular_dominios(dominios)
+
+    def _carregar_modelos(self, marca):
+        if not marca or marca == "Carregando...":
+            return
+        self._status(f"Buscando modelos para a marca: {marca}...", "yellow")
+
+        def request():
+            try:
+                modelos = api_client.carregar_modelos(self._cfg["api_url"], marca)
+                if not modelos:
+                    modelos = [""]
+                self.after(0, lambda: self.painel_hw.campo_nome_comercial.set_values(modelos))
+                self._status_thread(f"Modelos de {marca} carregados.", "gray")
+            except Exception as e:
+                print(f"Erro ao buscar modelos: {e}")
+                self.after(0, lambda: self.painel_hw.campo_nome_comercial.set_values([""]))
+
+        threading.Thread(target=request, daemon=True).start()
+
+    def _carregar_modelos_fisicos(self, modelo):
+        if not modelo or modelo == "Selecione uma Marca":
+            return
+        self._status(f"Buscando modelos físicos para: {modelo}...", "yellow")
+
+        def request():
+            try:
+                modelos_fisicos = api_client.carregar_modelos_fisicos(self._cfg["api_url"], modelo)
+                if not modelos_fisicos:
+                    modelos_fisicos = ["N/A"]
+                self.after(0, lambda: self.painel_hw.campo_modelo.set_values(modelos_fisicos))
+                if len(modelos_fisicos) == 1:
+                    self.after(0, lambda: self.painel_hw.campo_modelo.set(modelos_fisicos[0]))
+                self._status_thread("Modelos físicos carregados.", "gray")
+            except Exception as e:
+                print(f"Erro ao buscar modelos físicos: {e}")
+                self.after(0, lambda: self.painel_hw.campo_modelo.set_values(["N/A"]))
+
+        threading.Thread(target=request, daemon=True).start()
+
+    # =================================================================
+    #  LIMPAR CAMPOS
+    # =================================================================
+    def _limpar_tela(self):
+        self.painel_hw.limpar()
+        self.painel_insp.limpar()
+        self._status("Painel de digitação e extração limpo.", "gray")
+
+    # =================================================================
+    #  EXPORTAR PARA EXCEL
+    # =================================================================
+    def _exportar_para_clipboard(self):
+        hw = self.painel_hw.obter_dados()
+        insp = self.painel_insp.obter_dados()
+
+        tipo = "CELULAR"
+        marca = hw["marca"].upper()
+        modelo = hw["modelo"].upper()
+        nome_comercial = hw["nome_comercial"].upper()
+        cor = insp["cor"].upper()
+        imei1 = hw["imei1"]
+        imei2 = hw["imei2"]
+
+        meid = hw["meid"]
+        serie = hw["serie"].upper()
+        qnt_chips = insp["qnt_chips"]
+        chips_inst = insp["chips_inst"]
+        estado = insp["estado"].upper()
+
+        # Avarias selecionadas
+        avarias_selecionadas = [a.upper() for a in insp["avarias"]]
+        texto_avarias = ", ".join(avarias_selecionadas)
+
+        # Observações com autocorreção
+        obs_crua = insp["obs"].lower()
+        if obs_crua.strip():
+            dicionario_triagem = {
+                "arranhoes": "arranhões", "arranhao": "arranhão",
+                "carcaca": "carcaça", "botao": "botão", "botoes": "botões",
+                "camera": "câmera", "modulo": "módulo", "avaria": "avaria"
+            }
+            for errado, certo in dicionario_triagem.items():
+                obs_crua = obs_crua.replace(errado, certo)
+            obs_formatada = corretor_pt(obs_crua).upper()
+        else:
+            obs_formatada = ""
+
+        obs_final = texto_avarias
+        if obs_formatada:
+            obs_final = f"{texto_avarias} - {obs_formatada}" if texto_avarias else obs_formatada
+
+        condicao = insp["condicao"].upper()
+        peso = insp["peso"]
+
+        linha = f"{tipo}\t{marca}\t{modelo}\t{nome_comercial}\t{cor}\t{imei1}\t{imei2}\t{meid}\t\t{serie}\t{qnt_chips}\t{chips_inst}\t{estado}\t{obs_final}\t{condicao}\t{peso}"
+
+        self.clipboard_clear()
+        self.clipboard_append(linha)
+        self._status(f"Dados exportados p/ Excel ({modelo})", "#00FF00")
+
+    # =================================================================
+    #  SALVAR NA API
+    # =================================================================
+    def _enviar_para_api(self):
+        self._status("Enviando dados para a API...", "yellow")
+        hw = self.painel_hw.obter_dados()
+        insp = self.painel_insp.obter_dados()
+
+        peso_match = re.search(r'\d+', insp["peso"])
+        peso = int(peso_match.group()) if peso_match else 0
+
+        arm_match = re.search(r'\d+', hw["armazenamento"])
+        capacidade = int(arm_match.group()) if arm_match else 0
+
+        chips_inst = int(insp["chips_inst"]) if insp["chips_inst"].isdigit() else 0
+        chips_aceitos = int(insp["qnt_chips"]) if insp["qnt_chips"].isdigit() else 0
+
+        avarias_lista = [{"nome": a} for a in insp["avarias"]]
+
+        ram_match = re.search(r'\d+', hw["ram"])
+        capacidade_ram = int(ram_match.group()) if ram_match else None
+
+        id_tecnico_texto = insp["id_tecnico"].strip()
+        id_responsavel = int(id_tecnico_texto) if id_tecnico_texto.isdigit() else 1
+
+        def limpar_id(valor):
+            texto = valor.strip()
+            return "" if texto == "N/A" else texto
+
+        payload = {
+            "caixaRecebimento": {"nome": insp["caixa"]},
+            "modelo": {
+                "marca": {"nome": hw["marca"]},
+                "tipoEquipamento": {"nome": "Smartphone"},
+                "modelo": {"nome": hw["nome_comercial"]},
+                "modeloFisico": {"nome": hw["modelo"]},
+            },
+            "numeroSerie": limpar_id(hw["serie"]),
+            "idResponsavelTecnico": id_responsavel,
+            "imei1": limpar_id(hw["imei1"]),
+            "imei2": limpar_id(hw["imei2"]),
+            "meid": limpar_id(hw["meid"]),
+            "eid": "",
+            "capacidadeArmazenamentoGb": capacidade,
+            "capacidadeRamGb": capacidade_ram,
+            "cor": {"nome": insp["cor"]},
+            "qtdChipsInstalados": chips_inst,
+            "qtdChipsAceitos": chips_aceitos,
+            "estadoFisico": {"nome": insp["estado"]},
+            "estadoAcesso": {"nome": insp["acesso"]},
+            "condicaoFuncionamento": {"nome": insp["condicao"]},
+            "avarias": avarias_lista,
+            "pesoGramas": peso,
+            "observacoes": insp["obs"],
+        }
+
+        def request():
+            try:
+                dados = api_client.salvar_triagem(self._cfg["api_url"], payload)
+                id_estoque = dados.get("idItemEstoque")
+
+                def sucesso():
+                    self._status(f"Triagem Salva! ID Estoque: {id_estoque}. Gerando etiqueta...", "#00FF00")
+                    self.barra.patrimonio_num = int(id_estoque)
+                    self._gerar_etiqueta()
+
+                self.after(0, sucesso)
+            except Exception as e:
+                self._status_thread(f"Erro na API: {e}", "red")
+
+        threading.Thread(target=request, daemon=True).start()
+
+    # =================================================================
+    #  ETIQUETA
+    # =================================================================
+    def _gerar_etiqueta(self):
+        hw = self.painel_hw.obter_dados()
+        imei = hw["imei1"].strip()
+        if not imei or imei == "N/A":
+            self._status("Erro: É necessário um IMEI válido para gerar a etiqueta.", "red")
+            return
+
+        patrimonio = self.barra.get_patrimonio_texto()
+        escala = float(self._cfg.get("escala_conteudo", 1.0))
+
+        img = construir_imagem_etiqueta(
+            id_telefone=self.barra.patrimonio_num,
+            patrimonio=patrimonio,
+            marca=hw["marca"],
+            modelo=hw["nome_comercial"],
+            arm=hw["armazenamento"],
+            serie=hw["serie"],
+            estado=self.painel_insp.combo_estado.get(),
+            escala=escala
+        )
+
+        os.makedirs("etiquetas", exist_ok=True)
+        nome_base = patrimonio.replace(" ", "_").replace("-", "_")
+        arquivo_png = os.path.join("etiquetas", f"{nome_base}.png")
+        img.save(arquivo_png, dpi=(203, 203))
+
+        nome_impressora = self._cfg["impressora"]
+        if WIN32_DISPONIVEL:
+            threading.Thread(
+                target=self._imprimir_thread,
+                args=(img, nome_impressora, patrimonio),
+                daemon=True
+            ).start()
+        else:
+            self._status("win32print não disponível — abra o PNG e imprima manualmente.", "yellow")
+            os.startfile(arquivo_png)
+
+    def _imprimir_thread(self, img, nome_impressora, patrimonio):
+        try:
+            imprimir_imagem_win32(img, nome_impressora, patrimonio, self._cfg)
+            self._status_thread(f"Etiqueta [{patrimonio}] enviada para impressora!", "#00FF00")
+            self.after(0, lambda: setattr(self.barra, 'patrimonio_num', self.barra.patrimonio_num + 1))
+        except Exception as e:
+            self._status_thread(f"Erro ao imprimir: {e}", "red")
+
+    def _abrir_janela_editar_etiqueta(self):
+        avarias = list(self.painel_insp.vars_avarias.keys())
+        JanelaEtiqueta(self, self._cfg, avarias_conhecidas=avarias)
+
+    # =================================================================
+    #  CALIBRAÇÃO
+    # =================================================================
+    def _abrir_calibracao(self):
         win = ctk.CTkToplevel(self)
         win.title("⚙  Calibrar Impressão Térmica")
         win.geometry("460x460")
         win.resizable(False, False)
-        win.grab_set()  # modal
+        win.grab_set()
 
         ctk.CTkLabel(win, text="Calibrar Dimensões da Etiqueta",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(18, 4))
@@ -450,1609 +521,81 @@ class SistemaTriagem(ctk.CTk):
             return e
 
         e_impressora = campo("Nome da impressora:", self._cfg["impressora"])
-        e_largura    = campo("Largura da etiqueta (mm):", self._cfg["largura_mm"])
-        e_altura     = campo("Altura da etiqueta (mm):", self._cfg["altura_mm"])
-        e_offset_x   = campo("Ajuste Horizontal X (mm):", self._cfg.get("offset_x_mm", 0.0))
-        e_offset_y   = campo("Ajuste Vertical Y (mm):", self._cfg.get("offset_y_mm", 0.0))
-        e_escala     = campo("Escala Conteúdo (1.0 = 100%):", self._cfg.get("escala_conteudo", 1.0))
-
-        def _listar_impressoras():
-            try:
-                nomes = [p[2] for p in win32print.EnumPrinters(
-                    win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)]
-                return "\n".join(nomes)
-            except Exception:
-                return "(win32print indisponível)"
+        e_largura = campo("Largura da etiqueta (mm):", self._cfg["largura_mm"])
+        e_altura = campo("Altura da etiqueta (mm):", self._cfg["altura_mm"])
+        e_offset_x = campo("Ajuste Horizontal X (mm):", self._cfg.get("offset_x_mm", 0.0))
+        e_offset_y = campo("Ajuste Vertical Y (mm):", self._cfg.get("offset_y_mm", 0.0))
+        e_escala = campo("Escala Conteúdo (1.0 = 100%):", self._cfg.get("escala_conteudo", 1.0))
 
         if WIN32_DISPONIVEL:
-            ctk.CTkLabel(win,
-                text="Impressoras disponíveis: " + ", ".join(
-                    p[2] for p in win32print.EnumPrinters(
-                        win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)),
-                text_color="#888", font=ctk.CTkFont(size=10), wraplength=400
-            ).pack(pady=(6, 0), padx=20)
+            impressoras = listar_impressoras()
+            if impressoras:
+                ctk.CTkLabel(win,
+                    text="Impressoras disponíveis: " + ", ".join(impressoras),
+                    text_color="#888", font=ctk.CTkFont(size=10), wraplength=400
+                ).pack(pady=(6, 0), padx=20)
 
         def salvar():
             try:
-                self._cfg["impressora"]  = e_impressora.get().strip()
-                self._cfg["largura_mm"]  = float(e_largura.get().replace(",", "."))
-                self._cfg["altura_mm"]   = float(e_altura.get().replace(",", "."))
+                self._cfg["impressora"] = e_impressora.get().strip()
+                self._cfg["largura_mm"] = float(e_largura.get().replace(",", "."))
+                self._cfg["altura_mm"] = float(e_altura.get().replace(",", "."))
                 self._cfg["offset_x_mm"] = float(e_offset_x.get().replace(",", "."))
                 self._cfg["offset_y_mm"] = float(e_offset_y.get().replace(",", "."))
                 self._cfg["escala_conteudo"] = float(e_escala.get().replace(",", "."))
-                self._salvar_config_impressora()
-                self.atualizar_status(
+                cfg_module.salvar(self._cfg)
+                self._status(
                     f"Config salva: {self._cfg['largura_mm']}x{self._cfg['altura_mm']} mm — "
                     f"Impressora: {self._cfg['impressora']}", "#00FF00")
                 win.destroy()
             except ValueError:
-                self.atualizar_status("Valores inválidos — use números como 58.6 e 40.0", "red")
+                self._status("Valores inválidos — use números como 58.6 e 40.0", "red")
 
         ctk.CTkButton(win, text="💾  Salvar e Fechar", fg_color="#1f6aa5",
                       hover_color="#144870", command=salvar).pack(pady=18)
 
-    # --- CONTROLE DE PATRIMÔNIO ---
-    
-    def _patrimonio_atualizar_display(self):
-        """Atualiza o campo de entrada e salva o estado no config."""
-        self.entry_patrimonio.delete(0, 'end')
-        self.entry_patrimonio.insert(0, f"ITI TECH-{self._patrimonio_num:03d}")
-        
-        # Salva o novo número de patrimônio
-        if self._cfg.get("patrimonio_num") != self._patrimonio_num:
-            self._cfg["patrimonio_num"] = self._patrimonio_num
-            self._salvar_config_impressora()
-    
-    def _patrimonio_incrementar(self):
-        self._patrimonio_num += 1
-        self._patrimonio_atualizar_display()
-    
-    def _patrimonio_decrementar(self):
-        if self._patrimonio_num > 1:
-            self._patrimonio_num -= 1
-            self._patrimonio_atualizar_display()
-    
-    def _patrimonio_validar_entrada(self, event=None):
-        """Tenta extrair apenas o número digitado (com ou sem o prefixo)."""
-        texto = self.entry_patrimonio.get().strip()
-        prefixo = "ITI TECH-"
-        
-        # Aceita digitação com ou sem o prefixo
-        if texto.upper().startswith(prefixo):
-            numero_str = texto[len(prefixo):].strip()
-        else:
-            numero_str = texto
-        
-        try:
-            num = int(numero_str)
-            if num < 1:
-                num = 1
-            self._patrimonio_num = num
-        except ValueError:
-            pass  # mantém o valor anterior se inválido
-        
-        self._patrimonio_atualizar_display()
-
-    def ciclar_combobox(self, combo, direcao):
-        valores = combo.cget("values")
-        atual = combo.get()
-        
-        try:
-            idx = valores.index(atual)
-        except ValueError:
-            idx = 0
-            
-        if direcao == "up":
-            novo_idx = max(0, idx - 1)
-        else:
-            novo_idx = min(len(valores) - 1, idx + 1)
-            
-        combo.set(valores[novo_idx])
-
-    def configurar_atalhos(self):
-            self.campo_eid.bind("<Return>", lambda e: self.campo_imei1.focus())
-            self.campo_imei1.bind("<Return>", lambda e: self.campo_imei2.focus())
-            self.campo_imei2.bind("<Return>", lambda e: self.campo_meid.focus())
-            
-            # ATUALIZADO: Envia o foco para o combo_cor ao dar enter no MEID
-            self.campo_meid.bind("<Return>", lambda e: self.combo_cor.focus())
-            
-            # ATUALIZADO: Usa o _entry para capturar o "Enter" no ComboBox de cor
-            self.combo_cor._entry.bind("<Return>", lambda e: self.input_chips_inst.focus())
-            
-            self.input_chips_inst.bind("<Return>", lambda e: self.combo_estado.focus())
-
-            campos_hardware = [self.campo_eid, self.campo_imei1, self.campo_imei2, self.campo_meid]
-            for campo in campos_hardware:
-                campo.bind("<FocusIn>", lambda e, c=campo: c.after(10, lambda: c.select_range(0, 'end')))
-
-            # Atalhos para ciclar as opções dos ComboBoxes com as setas para cima/baixo
-            self.combo_estado._entry.bind("<Up>", lambda e: self.ciclar_combobox(self.combo_estado, "up"))
-            self.combo_estado._entry.bind("<Down>", lambda e: self.ciclar_combobox(self.combo_estado, "down"))
-            
-            self.combo_condicao._entry.bind("<Up>", lambda e: self.ciclar_combobox(self.combo_condicao, "up"))
-            self.combo_condicao._entry.bind("<Down>", lambda e: self.ciclar_combobox(self.combo_condicao, "down"))
-
-            # NOVO: Atalhos para o novo combo de estado de acesso (opcional, mas mantém a fluidez da UI)
-            self.combo_acesso._entry.bind("<Up>", lambda e: self.ciclar_combobox(self.combo_acesso, "up"))
-            self.combo_acesso._entry.bind("<Down>", lambda e: self.ciclar_combobox(self.combo_acesso, "down"))
-            
-            self.bind("<Control-p>", lambda e: self.abrir_janela_editar_etiqueta())
-        # --- RADAR DE DISPOSITIVOS USB ---
-
-    def iniciar_radar_usb(self):
-        thread_radar = threading.Thread(target=self.monitorar_usb, daemon=True)
-        thread_radar.start()
-
-    def monitorar_usb(self):
-        dispositivos_android = set()
-        dispositivos_ios = set()
-
-        while True:
-            time.sleep(1.5)
-
-            try:
-                out_ios = subprocess.check_output([CAMINHO_IDEVICEID, '-l'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip().split('\n')
-                ios_atuais = set([d for d in out_ios if d])
-            except Exception:
-                ios_atuais = set()
-
-            novos_ios = ios_atuais - dispositivos_ios
-            removidos_ios = dispositivos_ios - ios_atuais
-
-            for d in novos_ios:
-                self.atualizar_status(f"Aparelho Apple detectado na porta USB.", "#00FFFF")
-            for d in removidos_ios:
-                self.atualizar_status(f"Aparelho Apple desconectado.", "#8B8B8B")
-
-            dispositivos_ios = ios_atuais
-
-            try:
-                out_android = subprocess.check_output([CAMINHO_ADB, 'devices'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip().split('\n')
-                android_atuais = set()
-                for linha in out_android[1:]: 
-                    if '\t' in linha:
-                        android_atuais.add(linha.split('\t')[0])
-            except Exception:
-                android_atuais = set()
-
-            novos_android = android_atuais - dispositivos_android
-            removidos_android = dispositivos_android - android_atuais
-
-            for d in novos_android:
-                self.atualizar_status(f"Aparelho Android detectado (Acesso ADB liberado).", "#00FFFF")
-            for d in removidos_android:
-                self.atualizar_status(f"Aparelho Android desconectado.", "#8B8B8B")
-
-            dispositivos_android = android_atuais
-
-    # --- FUNÇÕES DE LÓGICA E INTERFACE ---
-
-    def atualizar_status(self, mensagem, cor="gray"):
-        self.lbl_status.configure(text=mensagem, text_color=cor)
-        
-        agora = datetime.now().strftime("%H:%M:%S")
-        linha_log = f"[{agora}] {mensagem}\n"
-        
-        self.caixa_log.configure(state="normal")
-        self.caixa_log.insert("end", linha_log)
-        self.caixa_log.see("end") 
-        self.caixa_log.configure(state="disabled")
-
-    def criar_campo_leitura(self, parent, texto):
-        lbl = ctk.CTkLabel(parent, text=texto)
-        lbl.pack(anchor="w", padx=20, pady=(2,0)) 
-        entry = ctk.CTkEntry(parent, state="disabled", text_color="#00FF00", font=ctk.CTkFont(weight="bold"))
-        entry.pack(fill="x", padx=20, pady=(0, 2))
-        return entry
-        
-    def criar_campo_entrada(self, parent, texto):
-        lbl = ctk.CTkLabel(parent, text=texto)
-        lbl.pack(anchor="w", padx=20, pady=(5,0))
-        entry = ctk.CTkEntry(parent)
-        entry.pack(fill="x", padx=20, pady=(0, 5))
-        return entry
-
-
-    def preencher_dados_tela(self, marca, modelo, nome_comercial, armazenamento, ram, eid, imei1, imei2, meid, serie):
-        # Campos de Texto Normal (Entry)
-        campos_identificadores = [
-            (self.campo_armazenamento, armazenamento), (self.campo_ram, ram),
-            (self.campo_eid, eid), (self.campo_imei1, imei1), 
-            (self.campo_imei2, imei2), (self.campo_meid, meid),
-            (self.campo_serie, serie) # Série movida pra cá, pois é Entry
-        ]
-        
-        # Campos Dropdown (ComboBox)
-        campos_combos = [
-            (self.campo_marca, marca),
-            (self.campo_nome_comercial, nome_comercial),
-            (self.campo_modelo, modelo) # Hardware ID
-        ]
-        
-        modo_manual = self.switch_manual.get() == 1
-        
-        # Preenche os combos
-        for combo, valor in campos_combos:
-            combo.configure(state="normal")
-            combo.set(valor)
-            if not modo_manual: 
-                combo.configure(state="disabled")
-            else:
-                combo.configure(text_color="#FFFFFF")
-                
-        # Preenche os entries
-        for campo, valor in campos_identificadores:
-            campo.configure(state="normal")
-            campo.delete(0, 'end')
-            campo.insert(0, valor)
-            if not modo_manual: 
-                campo.configure(state="disabled")
-            else: 
-                campo.configure(text_color="#FFFFFF") 
-
-        if hasattr(self, 'combo_cor'): self.combo_cor.set("")
-        self.input_qnt_chips.delete(0, 'end')
-        self.input_qnt_chips.insert(0, "2")
-        self.input_chips_inst.delete(0, 'end')
-
-    def alternar_modo_manual(self):
-        modo_ligado = self.switch_manual.get() == 1
-        estado = "normal" if modo_ligado else "disabled"
-        cor_texto = "#FFFFFF" if modo_ligado else "#00FF00"
-        
-        # Agora os combos de modelo também devem destravar no modo manual!
-        campos_liberaveis = [
-            self.campo_marca, self.campo_nome_comercial, self.campo_modelo,
-            self.campo_armazenamento, self.campo_ram, self.campo_eid, 
-            self.campo_imei1, self.campo_imei2, self.campo_meid, self.campo_serie
-        ]
-        
-        for campo in campos_liberaveis:
-            campo.configure(state=estado, text_color=cor_texto)
-            
-        if modo_ligado:
-            self.atualizar_status("Modo Manual: Identificadores liberados para leitor de código.", "yellow")
-            self.campo_marca.focus() # Manda o foco para o primeiro campo
-        else:
-            self.atualizar_status("Modo Manual Desativado. Todos os campos blindados.", "gray")
-
-    def limpar_tela(self):
-        # Agora são 10 argumentos vazios (adicionado a RAM)
-        self.preencher_dados_tela("", "", "", "", "", "", "", "", "", "")
-        
-        self.input_qnt_chips.delete(0, 'end')
-        self.input_chips_inst.delete(0, 'end')
-        self.input_obs.delete(0, 'end')
-        self.input_peso.delete(0, 'end')
-        
-        if hasattr(self, 'combo_estado'): self.combo_estado.set("")
-        if hasattr(self, 'combo_condicao'): self.combo_condicao.set("")
-        if hasattr(self, 'combo_cor'): self.combo_cor.set("")
-        if hasattr(self, 'combo_acesso'): self.combo_acesso.set("")
-        
-        if hasattr(self, 'vars_avarias'):
-            for var in self.vars_avarias.values(): var.set("")
-                
-        self.atualizar_status("Painel de digitação e extração limpo.", "gray")
-
-    # --- EXPORTAÇÃO EXCEL ---
-
-    def exportar_para_clipboard(self):
-        # Textos padronizados em MAIÚSCULO para a planilha
-        tipo = "CELULAR"
-        
-        marca = self.campo_marca.get().upper()
-        modelo = self.campo_modelo.get().upper()
-        nome_comercial = self.campo_nome_comercial.get().upper()
-        
-        # --- CORREÇÃO AQUI: Mudou de input_cor para combo_cor ---
-        cor = self.combo_cor.get().upper() if hasattr(self, 'combo_cor') else ""
-        
-        imei1 = self.campo_imei1.get()
-        imei2 = self.campo_imei2.get()
-        
-        eid_raw = self.campo_eid.get()
-        eid = f"'{eid_raw}" if eid_raw.strip() != "" and eid_raw != "N/A" else eid_raw
-        
-        meid = self.campo_meid.get()
-        serie = self.campo_serie.get().upper()
-        
-        qnt_chips = self.input_qnt_chips.get()
-        chips_inst = self.input_chips_inst.get() 
-        estado = self.combo_estado.get().upper()
-        
-        # --- NOVO: Pega as avarias selecionadas nos CheckBoxes ---
-        texto_avarias = ""
-        if hasattr(self, 'vars_avarias'):
-            avarias_selecionadas = [var.get().upper() for var in self.vars_avarias.values() if var.get() != ""]
-            texto_avarias = ", ".join(avarias_selecionadas)
-        
-        obs_crua = self.input_obs.get().lower()
-        if obs_crua.strip() != "":
-            dicionario_triagem = {
-                "arranhoes": "arranhões", "arranhao": "arranhão",
-                "carcaca": "carcaça", "botao": "botão", "botoes": "botões",
-                "camera": "câmera", "modulo": "módulo", "avaria": "avaria"
-            }
-            for errado, certo in dicionario_triagem.items():
-                obs_crua = obs_crua.replace(errado, certo)
-                
-            obs_formatada = corretor_pt(obs_crua).upper()
-            self.input_obs.delete(0, 'end')
-            self.input_obs.insert(0, obs_formatada)
-        else:
-            obs_formatada = ""
-            
-        # Junta as avarias marcadas com as observações digitadas para ir para o Excel
-        obs_final = texto_avarias
-        if obs_formatada:
-            obs_final = f"{texto_avarias} - {obs_formatada}" if texto_avarias else obs_formatada
-            
-        condicao = self.combo_condicao.get().upper()
-        peso = self.input_peso.get()
-
-        # Sequência exata: Tipo, Marca, Modelo, Nome Comercial, Cor, IMEI1, IMEI2, MEID, EID, Série, Qnt Chips, Chips Inst, Estado, Obs, Condição, Peso
-        linha_tabulada = f"{tipo}\t{marca}\t{modelo}\t{nome_comercial}\t{cor}\t{imei1}\t{imei2}\t{meid}\t{eid}\t{serie}\t{qnt_chips}\t{chips_inst}\t{estado}\t{obs_final}\t{condicao}\t{peso}"
-        
-        self.clipboard_clear()
-        self.clipboard_append(linha_tabulada)
-        
-        self.atualizar_status(f"Dados exportados p/ Excel ({modelo})", "#00FF00")
-
-    # --- GERAÇÃO E IMPRESSÃO DIRETA DE ETIQUETA ---
-
-    def _construir_imagem_etiqueta(self,idTelefone ,patrimonio, marca, modelo, arm, serie, estado):
-        """
-        Constrói a etiqueta como imagem PIL no tamanho exato da etiqueta física
-        (58,6 mm x 40 mm) na resolução de 203 DPI da impressora MDK-2054L.
-        Retorna um objeto PIL.Image.
-        """
-        DPI = 203
-        MM_POR_POLEGADA = 25.4
-
-        largura_px = int(round(58.6 / MM_POR_POLEGADA * DPI))  # ≈ 468 px
-        altura_px  = int(round(40.0 / MM_POR_POLEGADA * DPI))  # ≈ 320 px
-
-        img = Image.new("L", (largura_px, altura_px), 255)  # branco, escala de cinza
-        draw = ImageDraw.Draw(img)
-
-        # Pega a escala definida nas configurações
-        escala = float(self._cfg.get("escala_conteudo", 1.0))
-
-        # --- Fontes (usa a fonte embutida do Pillow se não tiver TrueType) ---
-        def _fonte(tamanho):
-            try:
-                caminho = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "Fonts", "arialbd.ttf")
-                if os.path.exists(caminho):
-                    return ImageFont.truetype(caminho, tamanho)
-                return ImageFont.truetype("arial.ttf", tamanho)
-            except Exception:
-                return ImageFont.load_default()
-
-        fonte_titulo  = _fonte(int(22 * escala))
-        fonte_normal  = _fonte(int(17 * escala))
-        fonte_pequena = _fonte(int(15 * escala))
-        fonte_pat     = _fonte(int(19 * escala))
-
-        def centralizar_texto(texto, y, fonte):
-            bbox = draw.textbbox((0, 0), texto, font=fonte)
-            w = bbox[2] - bbox[0]
-            x = (largura_px - w) // 2
-            draw.text((x, y), texto, font=fonte, fill=0)
-
-        # --- 1. Cabeçalho ---
-        centralizar_texto("Instituto ITI - Triagem", int(4 * escala), fonte_titulo)
-
-        # --- 2. Aparelho ---
-        if marca and not modelo.lower().startswith(marca.lower()):
-            txt_aparelho = f"{marca} {modelo}".strip()
-        else:
-            txt_aparelho = modelo if modelo else marca
-        centralizar_texto(txt_aparelho, int(32 * escala), fonte_normal)
-
-        # --- 3. Capacidade ---
-        txt_cap = f"Capacidade: {arm}" if arm and arm != "N/A" else "Capacidade: N/A"
-        centralizar_texto(txt_cap, int(54 * escala), fonte_pequena)
-
-        # --- 4. S/N e Estado ---
-        txt_sn = f"S/N: {serie or 'N/A'} | Est: {estado or 'N/A'}"
-        centralizar_texto(txt_sn, int(73 * escala), fonte_pequena)
-
-        # --- 5. QR Code ---
-        qr = qrcode.QRCode(version=2, box_size=4, border=1,
-                           error_correction=qrcode.constants.ERROR_CORRECT_H)
-        qr.add_data(idTelefone)
-        qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
-
-        # Redimensiona para caber (máx ~130 px de altura, deixando espaço para texto)
-        qr_alvo = int(116 * escala)
-        qr_img = qr_img.resize((qr_alvo, qr_alvo), Image.LANCZOS)
-
-        qr_x = (largura_px - qr_alvo) // 2
-        qr_y = int(96 * escala)
-        img.paste(qr_img, (qr_x, qr_y))
-
-        # --- 6. Nº de Patrimônio ---
-        centralizar_texto(patrimonio, int(218 * escala), fonte_pat)
-
-        return img
-
-    def abrir_janela_editar_etiqueta(self):
-        # Create a Toplevel window
-        win = ctk.CTkToplevel(self)
-        win.title("Editar / Exportar Etiqueta Antiga")
-        win.geometry("700x800")
-        win.attributes("-topmost", True)
-        win.focus_force()
-
-        self._etiqueta_em_edicao = None
-
-        # Search Frame
-        frame_busca = ctk.CTkFrame(win)
-        frame_busca.pack(fill="x", padx=20, pady=20)
-        
-        ctk.CTkLabel(frame_busca, text="ID da Etiqueta (ex: 100):").pack(side="left", padx=10)
-        entry_id = ctk.CTkEntry(frame_busca, width=150)
-        entry_id.pack(side="left", padx=10)
-        
-        btn_buscar = ctk.CTkButton(frame_busca, text="Buscar", width=100)
-        btn_buscar.pack(side="left", padx=10)
-        
-        lbl_status = ctk.CTkLabel(frame_busca, text="", text_color="yellow")
-        lbl_status.pack(side="left", padx=10)
-
-        # Main Scrollable Form Frame
-        form_scroll = ctk.CTkScrollableFrame(win)
-        form_scroll.pack(fill="both", expand=True, padx=20, pady=5)
-        
-        # --- SEÇÃO 1: Leitura USB (Hardware) ---
-        lbl_sec1 = ctk.CTkLabel(form_scroll, text="Dados do Aparelho (Leitura/Hardware)", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl_sec1.pack(pady=(10, 5), anchor="w")
-        
-        def criar_campo_simples(parent, texto):
-            lbl = ctk.CTkLabel(parent, text=texto)
-            lbl.pack(anchor="w", pady=(5,0))
-            entry = ctk.CTkEntry(parent)
-            entry.pack(fill="x", pady=(0, 5))
-            return entry
-
-        e_marca = criar_campo_simples(form_scroll, "Marca:")
-        e_modelo = criar_campo_simples(form_scroll, "Nome Comercial:")
-        e_modelo_fisico = criar_campo_simples(form_scroll, "Modelo Físico (Hardware ID):")
-        
-        frame_arm_ram = ctk.CTkFrame(form_scroll, fg_color="transparent")
-        frame_arm_ram.pack(fill="x", pady=(2, 0))
-        frame_arm_ram.grid_columnconfigure(0, weight=1)
-        frame_arm_ram.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(frame_arm_ram, text="Armazenamento:").grid(row=0, column=0, sticky="w")
-        e_arm = ctk.CTkEntry(frame_arm_ram)
-        e_arm.grid(row=1, column=0, sticky="ew", padx=(0, 5))
-        ctk.CTkLabel(frame_arm_ram, text="Memória RAM:").grid(row=0, column=1, sticky="w")
-        e_ram = ctk.CTkEntry(frame_arm_ram)
-        e_ram.grid(row=1, column=1, sticky="ew", padx=(5, 0))
-        
-        e_eid = criar_campo_simples(form_scroll, "EID (eSIM):")
-        e_imei = criar_campo_simples(form_scroll, "IMEI 1:")
-        e_imei2 = criar_campo_simples(form_scroll, "IMEI 2:")
-        e_meid = criar_campo_simples(form_scroll, "MEID:")
-        e_serie = criar_campo_simples(form_scroll, "Número de Série:")
-
-        # --- SEÇÃO 2: Inspeção Física ---
-        lbl_sec2 = ctk.CTkLabel(form_scroll, text="Inspeção Física", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl_sec2.pack(pady=(20, 5), anchor="w")
-        
-        e_tecnico = criar_campo_simples(form_scroll, "ID Responsável Técnico:")
-        e_caixa = criar_campo_simples(form_scroll, "Caixa de Recebimento:")
-        e_cor = criar_campo_simples(form_scroll, "Cor do Aparelho:")
-        
-        frame_chips_peso = ctk.CTkFrame(form_scroll, fg_color="transparent")
-        frame_chips_peso.pack(fill="x", pady=(5, 5))
-        frame_chips_peso.grid_columnconfigure(0, weight=1)
-        frame_chips_peso.grid_columnconfigure(1, weight=1)
-        frame_chips_peso.grid_columnconfigure(2, weight=1)
-        ctk.CTkLabel(frame_chips_peso, text="Chips Aceit.:").grid(row=0, column=0, sticky="w")
-        e_chips_aceitos = ctk.CTkEntry(frame_chips_peso)
-        e_chips_aceitos.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-        ctk.CTkLabel(frame_chips_peso, text="Chips Inst.:").grid(row=0, column=1, sticky="w")
-        e_chips_inst = ctk.CTkEntry(frame_chips_peso)
-        e_chips_inst.grid(row=1, column=1, sticky="ew", padx=(4, 4))
-        ctk.CTkLabel(frame_chips_peso, text="Peso (g):").grid(row=0, column=2, sticky="w")
-        e_peso = ctk.CTkEntry(frame_chips_peso)
-        e_peso.grid(row=1, column=2, sticky="ew", padx=(4, 0))
-        
-        e_estado = criar_campo_simples(form_scroll, "Estado Físico:")
-        
-        frame_cond_acesso = ctk.CTkFrame(form_scroll, fg_color="transparent")
-        frame_cond_acesso.pack(fill="x", pady=(5, 5))
-        frame_cond_acesso.grid_columnconfigure(0, weight=1)
-        frame_cond_acesso.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(frame_cond_acesso, text="Condição de Func.:").grid(row=0, column=0, sticky="w")
-        e_condicao = ctk.CTkEntry(frame_cond_acesso)
-        e_condicao.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-        ctk.CTkLabel(frame_cond_acesso, text="Estado de Acesso:").grid(row=0, column=1, sticky="w")
-        e_acesso = ctk.CTkEntry(frame_cond_acesso)
-        e_acesso.grid(row=1, column=1, sticky="ew", padx=(4, 0))
-        
-        e_obs = criar_campo_simples(form_scroll, "Observações Adicionais:")
-        
-        lbl_avarias = ctk.CTkLabel(form_scroll, text="Avarias Identificadas:")
-        lbl_avarias.pack(anchor="w", pady=(10,0))
-        
-        frame_avarias = ctk.CTkScrollableFrame(form_scroll, height=100)
-        frame_avarias.pack(fill="x", pady=(0, 5))
-        
-        vars_avarias_edit = {}
-        
-        # Mapear todas as avarias conhecidas do painel principal
-        if hasattr(self, 'vars_avarias'):
-            for avaria in self.vars_avarias.keys():
-                var = ctk.StringVar(value="")
-                chk = ctk.CTkCheckBox(frame_avarias, text=avaria, variable=var, onvalue=avaria, offvalue="")
-                chk.pack(anchor="w", pady=2)
-                vars_avarias_edit[avaria] = var
-        else:
-            ctk.CTkLabel(frame_avarias, text="Nenhuma avaria carregada. Faça uma leitura de domínio primeiro.").pack()
-
-        def buscar_dados():
-            texto_id = entry_id.get().strip()
-            match = re.search(r'\d+', texto_id)
-            if not match:
-                lbl_status.configure(text="ID inválido.", text_color="red")
-                return
-            
-            id_num = match.group()
-            url = f"{self._cfg['api_url']}/triagem/triagem/{id_num}"
-            
-            def request_thread():
-                try:
-                    response = requests.get(url, timeout=5, verify=False)
-                    if response.status_code == 200:
-                        dados = response.json()
-                        self._etiqueta_em_edicao = dados
-                        
-                        def update_ui():
-                            def preencher(e, valor):
-                                e.delete(0, 'end')
-                                if valor is not None:
-                                    e.insert(0, str(valor))
-
-                            preencher(e_marca, dados.get("marca", ""))
-                            preencher(e_modelo, dados.get("modelo", ""))
-                            preencher(e_modelo_fisico, dados.get("modeloFisico", ""))
-                            
-                            preencher(e_arm, dados.get("capacidadeArmazenamentoGb", ""))
-                            preencher(e_ram, dados.get("capacidadeRamGb", ""))
-                            preencher(e_eid, dados.get("eid", ""))
-                            preencher(e_imei, dados.get("imei1", ""))
-                            preencher(e_imei2, dados.get("imei2", ""))
-                            preencher(e_meid, dados.get("meid", ""))
-                            preencher(e_serie, dados.get("numeroSerie", ""))
-                            
-                            preencher(e_tecnico, dados.get("idResponsavelTecnico", ""))
-                            preencher(e_caixa, dados.get("caixaRecebimento", ""))
-                            preencher(e_cor, dados.get("cor", ""))
-                            
-                            preencher(e_chips_aceitos, dados.get("qtdChipsAceitos", ""))
-                            preencher(e_chips_inst, dados.get("qtdChipsInstalados", ""))
-                            preencher(e_peso, dados.get("pesoGramas", ""))
-                            
-                            preencher(e_estado, dados.get("estadoFisico", ""))
-                            preencher(e_condicao, dados.get("condicaoFuncionamento", ""))
-                            preencher(e_acesso, dados.get("estadoAcesso", ""))
-                            preencher(e_obs, dados.get("observacoes", ""))
-                            
-                            # Limpar avarias
-                            for var in vars_avarias_edit.values(): var.set("")
-                                
-                            # Preencher avarias
-                            avs = dados.get("avarias", [])
-                            if isinstance(avs, list):
-                                for av in avs:
-                                    if av in vars_avarias_edit:
-                                        vars_avarias_edit[av].set(av)
-                                    else:
-                                        var = ctk.StringVar(value=av)
-                                        chk = ctk.CTkCheckBox(frame_avarias, text=av, variable=var, onvalue=av, offvalue="")
-                                        chk.pack(anchor="w", pady=2)
-                                        vars_avarias_edit[av] = var
-                            
-                            lbl_status.configure(text="Encontrado!", text_color="#00FF00")
-                        self.after(0, update_ui)
-                    else:
-                        self.after(0, lambda: lbl_status.configure(text=f"Não encontrado (404)", text_color="red"))
-                except Exception as e:
-                    self.after(0, lambda: lbl_status.configure(text=f"Erro de conexão", text_color="red"))
-            
-            lbl_status.configure(text="Buscando...", text_color="yellow")
-            threading.Thread(target=request_thread, daemon=True).start()
-
-        btn_buscar.configure(command=buscar_dados)
-
-        # Action Buttons
-        frame_actions = ctk.CTkFrame(win, fg_color="transparent")
-        frame_actions.pack(fill="x", padx=20, pady=20)
-
-        def salvar_alteracoes():
-            if not self._etiqueta_em_edicao:
-                lbl_status.configure(text="Busque um ID primeiro.", text_color="red")
-                return
-                
-            texto_id = entry_id.get().strip()
-            match = re.search(r'\d+', texto_id)
-            id_num = match.group()
-            
-            url = f"{self._cfg['api_url']}/triagem/triagem/{id_num}"
-            
-            def int_or_none(valor):
-                try: return int(valor) if valor.strip() else None
-                except ValueError: return None
-                
-            def str_or_empty(valor): return valor.strip()
-            
-            avarias_selecionadas = [{"nome": var.get()} for var in vars_avarias_edit.values() if var.get() != ""]
-
-            payload = {
-                "id": int(id_num),
-                "caixaRecebimento": { "nome": str_or_empty(e_caixa.get()) },
-                "modelo": {
-                    "marca": { "nome": str_or_empty(e_marca.get()) },
-                    "tipoEquipamento": { "nome": "Smartphone" }, 
-                    "modelo": { "nome": str_or_empty(e_modelo.get()) },
-                    "modeloFisico": { "nome": str_or_empty(e_modelo_fisico.get()) }
-                },
-                "numeroSerie": str_or_empty(e_serie.get()),
-                "idResponsavelTecnico": int_or_none(e_tecnico.get()),
-                "imei1": str_or_empty(e_imei.get()),
-                "imei2": str_or_empty(e_imei2.get()),
-                "meid": str_or_empty(e_meid.get()),
-                "eid": str_or_empty(e_eid.get()),
-                "capacidadeArmazenamentoGb": int_or_none(e_arm.get()),
-                "capacidadeRamGb": int_or_none(e_ram.get()), 
-                "cor": { "nome": str_or_empty(e_cor.get()) }, 
-                "qtdChipsInstalados": int_or_none(e_chips_inst.get()),
-                "qtdChipsAceitos": int_or_none(e_chips_aceitos.get()), 
-                "pesoGramas": int_or_none(e_peso.get()),
-                "estadoFisico": { "nome": str_or_empty(e_estado.get()) },
-                "condicaoFuncionamento": { "nome": str_or_empty(e_condicao.get()) },
-                "estadoAcesso": { "nome": str_or_empty(e_acesso.get()) },
-                "observacoes": str_or_empty(e_obs.get()),
-                "avarias": avarias_selecionadas
-            }
-
-            def request_thread():
-                try:
-                    response = requests.put(url, json=payload, timeout=5, verify=False)
-                    if response.status_code in [200, 201, 204]:
-                        self.after(0, lambda: lbl_status.configure(text="Alterações salvas!", text_color="#00FF00"))
-                    else:
-                        print(f"API Error {response.status_code}: {response.text}")
-                        self.after(0, lambda: lbl_status.configure(text=f"Erro ao salvar ({response.status_code})", text_color="red"))
-                except Exception as e:
-                    self.after(0, lambda: lbl_status.configure(text=f"Erro de conexão", text_color="red"))
-
-            lbl_status.configure(text="Salvando...", text_color="yellow")
-            threading.Thread(target=request_thread, daemon=True).start()
-
-        def imprimir_agora():
-            if not self._etiqueta_em_edicao:
-                lbl_status.configure(text="Busque um ID primeiro.", text_color="red")
-                return
-                
-            texto_id = entry_id.get().strip()
-            match = re.search(r'\d+', texto_id)
-            id_num = match.group()
-            patrimonio = f"ITI TECH-{int(id_num):03d}"
-            
-            img_etiqueta = self._construir_imagem_etiqueta(
-                idTelefone=id_num,
-                patrimonio=patrimonio, 
-                marca=e_marca.get(), 
-                modelo=e_modelo.get(), 
-                arm=e_arm.get(), 
-                serie=e_serie.get(), 
-                estado=e_estado.get()
-            )
-            
-            os.makedirs("etiquetas", exist_ok=True)
-            arquivo_png = os.path.join("etiquetas", f"etiqueta_{patrimonio}.png")
-            img_etiqueta.save(arquivo_png, dpi=(203, 203))
-            
-            try:
-                import win32print
-                self._imprimir_imagem_win32(img_etiqueta, self._cfg["impressora"], patrimonio)
-                lbl_status.configure(text="Etiqueta impressa!", text_color="#00FF00")
-            except Exception as e:
-                lbl_status.configure(text=f"Salvo em {arquivo_png}, falha: {e}", text_color="orange")
-
-        btn_salvar = ctk.CTkButton(frame_actions, text="Salvar Alterações", fg_color="green", hover_color="darkgreen", command=salvar_alteracoes)
-        btn_salvar.pack(side="left", expand=True, padx=10)
-        
-        btn_imprimir = ctk.CTkButton(frame_actions, text="Imprimir Etiqueta", fg_color="#1f6aa5", hover_color="#144870", command=imprimir_agora)
-        btn_imprimir.pack(side="left", expand=True, padx=10)
-
-    def gerar_etiqueta_pdf(self, event=None):
-        imei = self.campo_imei1.get().strip()
-        if not imei or imei == "N/A" or imei == "":
-            self.atualizar_status("Erro: É necessário um IMEI válido para gerar a etiqueta.", "red")
-            return
-
-        # Valida e captura o patrimônio atual
-        self._patrimonio_validar_entrada()
-        patrimonio = f"ITI TECH-{self._patrimonio_num:03d}"
-
-        marca  = self.campo_marca.get().strip()
-        modelo = self.campo_nome_comercial.get().strip()
-        arm    = self.campo_armazenamento.get().strip()
-        serie  = self.campo_serie.get().strip()
-        estado = self.combo_estado.get().strip()
-
-        # --- Garante pasta de saída ---
-        pasta = "etiquetas"
-        os.makedirs(pasta, exist_ok=True)
-
-        # --- Constrói a imagem ---
-        img_etiqueta = self._construir_imagem_etiqueta(self._patrimonio_num, patrimonio, marca, modelo, arm, serie, estado)
-
-        # Salva PNG de referência
-        nome_base = patrimonio.replace(" ", "_").replace("-", "_")
-        arquivo_png = os.path.join(pasta, f"{nome_base}.png")
-        img_etiqueta.save(arquivo_png, dpi=(203, 203))
-
-        # --- Impressão direta via Windows GDI ---
-        NOME_IMPRESSORA = self._cfg["impressora"]
-
-        if WIN32_DISPONIVEL:
-            threading.Thread(
-                target=self._imprimir_imagem_win32,
-                args=(img_etiqueta, NOME_IMPRESSORA, patrimonio),
-                daemon=True
-            ).start()
-        else:
-            # Fallback: abre o PNG para impressão manual
-            self.atualizar_status("win32print não disponível — abra o PNG e imprima manualmente.", "yellow")
-            os.startfile(arquivo_png)
-
-    def _imprimir_imagem_win32(self, img: Image.Image, nome_impressora: str, patrimonio: str):
-        """Envia a imagem PIL diretamente para a impressora via Windows GDI."""
-        try:
-            # Verifica se a impressora existe; usa a padrão como fallback
-            nomes_disponiveis = [p[2] for p in win32print.EnumPrinters(
-                win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)]
-            if nome_impressora not in nomes_disponiveis:
-                nome_impressora = win32print.GetDefaultPrinter()
-
-            # 1. Obtém o DEVMODE padrão configurado no Painel de Controle
-            hprinter = win32print.OpenPrinter(nome_impressora)
-            printer_info = win32print.GetPrinter(hprinter, 2)
-            devmode = printer_info["pDevMode"]
-            
-            # NÃO modificamos o devmode. O usuário já configurou no driver.
-            
-            # 2. Cria contexto de dispositivo usando as configs nativas do driver
-            hdc_gui = win32gui.CreateDC("WINSPOOL", nome_impressora, devmode)
-            hdc = win32ui.CreateDCFromHandle(hdc_gui)
-
-            # Obtém a área de impressão real que o driver definiu
-            dpi_x = hdc.GetDeviceCaps(win32con.LOGPIXELSX)
-            dpi_y = hdc.GetDeviceCaps(win32con.LOGPIXELSY)
-            imp_w = hdc.GetDeviceCaps(win32con.HORZRES)
-            imp_h = hdc.GetDeviceCaps(win32con.VERTRES)
-
-            MM = 25.4
-            
-            # Calcula o deslocamento (offset) definido no nosso app
-            offset_x_mm = self._cfg.get("offset_x_mm", 0.0)
-            offset_y_mm = self._cfg.get("offset_y_mm", 0.0)
-            offset_x_px = int(round(offset_x_mm / MM * dpi_x))
-            offset_y_px = int(round(offset_y_mm / MM * dpi_y))
-
-            # Redimensiona a imagem PIL
-            alvo_w = int(round(self._cfg["largura_mm"] / MM * dpi_x))
-            alvo_h = int(round(self._cfg["altura_mm"] / MM * dpi_y))
-            img_impressao = img.resize((alvo_w, alvo_h), Image.LANCZOS).convert("RGB")
-
-            # Corta a imagem caso o offset faça ela vazar para fora da página (evita pular páginas extras)
-            if offset_x_px < 0:
-                img_impressao = img_impressao.crop((-offset_x_px, 0, alvo_w, alvo_h))
-                alvo_w += offset_x_px
-                offset_x_px = 0
-            if offset_y_px < 0:
-                img_impressao = img_impressao.crop((0, -offset_y_px, alvo_w, alvo_h))
-                alvo_h += offset_y_px
-                offset_y_px = 0
-                
-            crop_w = min(alvo_w, imp_w - offset_x_px)
-            crop_h = min(alvo_h, imp_h - offset_y_px)
-            if crop_w < alvo_w or crop_h < alvo_h:
-                img_impressao = img_impressao.crop((0, 0, crop_w, crop_h))
-
-            hdc.StartDoc(f"Etiqueta {patrimonio}")
-            hdc.StartPage()
-
-            # Desenha a área da etiqueta rigorosamente dentro dos limites
-            dib = ImageWin.Dib(img_impressao)
-            x2 = offset_x_px + crop_w
-            y2 = offset_y_px + crop_h
-            
-            dib.draw(hdc.GetHandleAttrib(), (offset_x_px, offset_y_px, x2, y2))
-
-            hdc.EndPage()
-            hdc.EndDoc()
-            hdc.DeleteDC()
-            win32print.ClosePrinter(hprinter)
-
-            self.after(0, lambda: self.atualizar_status(
-                f"Etiqueta [{patrimonio}] enviada para impressora!", "#00FF00"))
-
-            # Incrementa para o próximo
-            self.after(0, self._patrimonio_incrementar)
-
-        except Exception as e:
-            self.after(0, lambda: self.atualizar_status(
-                f"Erro ao imprimir: {e}", "red"))
-
-    # --- MOTORES DE EXTRAÇÃO ---
-
-    def iniciar_leitura_ios(self):
-        self.atualizar_status("Iniciando varredura profunda no iOS...", "yellow")
-        threading.Thread(target=self.extrair_dados_ios).start()
-
-    def extrair_dados_ios(self):
-        try:
-            tabela_iphones = {
-                "iPhone7,1": "iPhone 6 Plus", "iPhone7,2": "iPhone 6",
-                "iPhone8,1": "iPhone 6s", "iPhone8,2": "iPhone 6s Plus", "iPhone8,4": "iPhone SE (1ª Ger)",
-                "iPhone9,1": "iPhone 7", "iPhone9,3": "iPhone 7",
-                "iPhone9,2": "iPhone 7 Plus", "iPhone9,4": "iPhone 7 Plus",
-                "iPhone10,1": "iPhone 8", "iPhone10,4": "iPhone 8",
-                "iPhone10,2": "iPhone 8 Plus", "iPhone10,5": "iPhone 8 Plus",
-                "iPhone10,3": "iPhone X", "iPhone10,6": "iPhone X",
-                "iPhone11,2": "iPhone XS", "iPhone11,4": "iPhone XS Max", "iPhone11,6": "iPhone XS Max",
-                "iPhone11,8": "iPhone XR",
-                "iPhone12,1": "iPhone 11", "iPhone12,3": "iPhone 11 Pro", "iPhone12,5": "iPhone 11 Pro Max",
-                "iPhone12,8": "iPhone SE (2ª Ger)",
-                "iPhone13,1": "iPhone 12 mini", "iPhone13,2": "iPhone 12", "iPhone13,3": "iPhone 12 Pro", "iPhone13,4": "iPhone 12 Pro Max",
-                "iPhone14,4": "iPhone 13 mini", "iPhone14,5": "iPhone 13", "iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max",
-                "iPhone14,6": "iPhone SE (3ª Ger)",
-                "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus",
-                "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
-                "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus",
-                "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max",
-                "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max", "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
-                "iPhone18,1": "iPhone 17 Pro", "iPhone18,2": "iPhone 17 Pro Max", "iPhone18,3": "iPhone 17", "iPhone18,4": "iPhone 17 Plus"
-            }
-            
-            self.atualizar_status("Extraindo dicionário de Hardware (Dump Completo)...", "yellow")
-            
-            raw_info = subprocess.check_output([CAMINHO_IDEVICEINFO], text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            info_dict = {}
-            for linha in raw_info.split('\n'):
-                if ': ' in linha:
-                    chave, valor = linha.split(': ', 1)
-                    info_dict[chave.strip()] = valor.strip()
-            
-            marca = "Apple"
-            modelo = info_dict.get('ProductType', 'Desconhecido')
-            nome_comercial = tabela_iphones.get(modelo, modelo)
-            
-            serie = info_dict.get('SerialNumber', 'N/A')
-            imei1 = info_dict.get('InternationalMobileEquipmentIdentity', 'N/A')
-            
-            imei2 = info_dict.get('InternationalMobileEquipmentIdentity2', info_dict.get('InternationalMobileSubscriberIdentity', 'N/A'))
-            if imei2 == imei1: 
-                imei2 = "N/A"
-                
-            meid  = info_dict.get('MobileEquipmentIdentifier', 'N/A')
-            eid = "N/A" 
-            
-            self.atualizar_status("Calculando capacidade de disco rígido...", "yellow")
-            try:
-                bytes_raw = subprocess.check_output([CAMINHO_IDEVICEINFO, '-q', 'com.apple.disk_usage', '-k', 'TotalDiskCapacity'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                gb_calculado = int(bytes_raw) / (1000 ** 3)
-                tamanhos_mercado = [8, 16, 32, 64, 128, 256, 512, 1024]
-                tamanho_real = min(tamanhos_mercado, key=lambda x: abs(x - gb_calculado))
-                armazenamento_final = f"{tamanho_real} GB"
-            except Exception:
-                armazenamento_final = "N/A"
-            
-            ram_final = "N/A" # A Apple esconde a RAM de comandos nativos do terminal
-            
-            self.preencher_dados_tela(marca, modelo, nome_comercial, armazenamento_final, ram_final, eid, imei1, imei2, meid, serie)
-            self.atualizar_status(f"Leitura concluída com sucesso.", "#00FF00")
-            
-        except FileNotFoundError:
-            self.atualizar_status("Falha Crítica: Motor ideviceinfo ausente no PATH.", "red")
-        except subprocess.CalledProcessError:
-            self.atualizar_status("Falha de Comunicação: Dispositivo bloqueado ou cabo com defeito.", "red")
-
-    def iniciar_leitura_android(self):
-        self.atualizar_status("Iniciando requisição de interface ADB...", "yellow")
-        threading.Thread(target=self.extrair_dados_android).start()
-
-    def extrair_dados_android(self):
-        try:
-            self.atualizar_status("Acessando propriedades do sistema (getprop)...", "yellow")
-            
-            marca_raw = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.product.brand'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-            marca = marca_raw.capitalize() if marca_raw else "N/A"
-            
-            modelo = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.product.model'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-            
-            try:
-                mercado_raw = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.product.marketname'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                nome_comercial = mercado_raw if mercado_raw else modelo
-            except Exception:
-                nome_comercial = modelo
-            
-            try:
-                serie_psno = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.ril.oem.psno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                serie_gsm = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'vendor.gsm.serial'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                serie_boot = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.boot.serialno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                serie_normal = subprocess.check_output([CAMINHO_ADB, 'shell', 'getprop', 'ro.serialno'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                
-                if serie_psno and len(serie_psno) > 4:
-                    serie = serie_psno
-                elif serie_normal and serie_normal != "N/A" and serie_normal != "unknown":
-                    serie = serie_normal
-                elif serie_gsm and len(serie_gsm) > 4:
-                    serie = serie_gsm
-                else:
-                    serie = serie_boot
-            except Exception:
-                serie = "N/A"
-
-            self.atualizar_status("Bypass em andamento para extração de IMEI...", "yellow")
-            imeis_meids = set()
-            
-            for i in range(1, 6):
-                for slot in [0, 1]:
-                    try:
-                        cmd = f'"{CAMINHO_ADB}" shell "service call iphonesubinfo {i} i32 {slot}"'
-                        out = subprocess.getoutput(cmd)
-                        if 'Parcel' in out:
-                            parts = re.findall(r"'(.*?)'", out)
-                            clean_str = "".join(parts).replace('.', '').replace(' ', '').strip()
-                            if len(clean_str) >= 14 and clean_str.isalnum():
-                                imeis_meids.add(clean_str)
-                    except Exception:
-                        pass
-                        
-            try:
-                prop_imeis = subprocess.getoutput(f'"{CAMINHO_ADB}" shell "getprop | grep -i imei"')
-                for match in re.findall(r'\[(.*?)\]:\s*\[(.*?)\]', prop_imeis):
-                    val = match[1].strip()
-                    if len(val) >= 14 and val.isalnum():
-                        imeis_meids.add(val)
-            except Exception:
-                pass
-
-            ids_lista = sorted(list(imeis_meids))
-            imei1 = "N/A"
-            imei2 = "N/A"
-            meid = "N/A"
-            
-            for ident in ids_lista:
-                if len(ident) == 14:
-                    meid = ident
-                elif len(ident) >= 15:
-                    if imei1 == "N/A":
-                        imei1 = ident
-                    elif imei2 == "N/A" and ident != imei1:
-                        imei2 = ident
-
-            eid = "N/A"
-            try:
-                prop_eid = subprocess.getoutput(f'"{CAMINHO_ADB}" shell "getprop | grep -i eid"')
-                for match in re.findall(r'\[(.*?)\]:\s*\[(.*?)\]', prop_eid):
-                    val = match[1].strip()
-                    if len(val) == 32 and val.isdigit() and val.startswith("89"):
-                        eid = val
-                        break
-            except Exception:
-                pass
-
-            if imei1 != "N/A" or imei2 != "N/A":
-                status_final = f"Leitura ADB concluída: {marca} {modelo}"
-                cor_final = "#00FF00"
-            else:
-                status_final = f"Leitura parcial ({marca} {modelo}): IMEI bloqueado pelo Android 10+"
-                cor_final = "yellow"
-            
-            self.atualizar_status("Calculando capacidade de disco (Storage)...", "yellow")
-            armazenamento_final = "N/A"
-            try:
-                df_out = subprocess.check_output([CAMINHO_ADB, 'shell', 'df'], text=True, creationflags=subprocess.CREATE_NO_WINDOW).strip()
-                for linha in df_out.split('\n'):
-                    if '/data' in linha:
-                        partes = linha.split()
-                        if len(partes) >= 4:
-                            # Tratar possível quebra de linha do df
-                            # Se a primeira coluna começar com '/', é o caminho (ex: /dev/block/dm-4), tamanho está no índice 1
-                            if partes[0].startswith('/'):
-                                tamanho_str = partes[1]
-                            # Se começar com número, a linha quebrou e o caminho ficou na linha anterior, tamanho no índice 0
-                            elif partes[0][0].isdigit():
-                                tamanho_str = partes[0]
-                            else:
-                                tamanho_str = partes[1]
-                                
-                            tamanho_str = tamanho_str.upper()
-                            match = re.search(r'([\d\.]+)', tamanho_str)
-                            if match:
-                                val = float(match.group(1))
-                                if 'G' in tamanho_str:
-                                    gb = val
-                                elif 'M' in tamanho_str:
-                                    gb = val / 1024
-                                elif 'K' in tamanho_str:
-                                    gb = val / (1024 * 1024)
-                                else:
-                                    # Sem sufixo, o df reporta em 1K-blocks
-                                    gb = val / (1024 * 1024)
-                                    
-                                if gb > 0:
-                                    tamanhos_mercado = [8, 16, 32, 64, 128, 256, 512, 1024]
-                                    # O tamanho físico é sempre maior que a partição /data (pois o OS ocupa espaço)
-                                    tamanho_real = next((t for t in tamanhos_mercado if t >= gb), tamanhos_mercado[-1])
-                                    armazenamento_final = f"{tamanho_real} GB"
-                                    break
-            except Exception:
-                pass
-
-            self.atualizar_status("Calculando capacidade de RAM (MemTotal)...", "yellow")
-            try:
-                ram_raw = subprocess.check_output([CAMINHO_ADB, 'shell', 'cat /proc/meminfo'], text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                kb_match = re.search(r'MemTotal:\s+(\d+)\s+kB', ram_raw, re.IGNORECASE)
-                if kb_match:
-                    gb_ram_float = int(kb_match.group(1)) / (1024 * 1024)
-                    tamanhos_ram = [1, 2, 3, 4, 6, 8, 12, 16, 24]
-                    # A RAM reportada é sempre menor que a física devido à RAM reservada pelo sistema.
-                    # Portanto, a RAM real é o menor tamanho comercial que seja >= à RAM reportada.
-                    gb_calculado = next((t for t in tamanhos_ram if t >= gb_ram_float), tamanhos_ram[-1])
-                    ram_final = f"{gb_calculado} GB"
-                else:
-                    ram_final = "N/A"
-            except Exception:
-                ram_final = "N/A"
-
-            self.preencher_dados_tela(marca, modelo, nome_comercial, armazenamento_final, ram_final, eid, imei1, imei2, meid, serie)
-            self.atualizar_status(status_final, cor_final)
-            
-        except Exception as e:
-            self.atualizar_status("Falha de Comunicação: Aparelho offline ou Depuração desligada.", "red")
-
-    def iniciar_leitura_fastboot(self):
-        self.atualizar_status("Iniciando requisição Fastboot...", "yellow")
-        threading.Thread(target=self.extrair_dados_fastboot).start()
-
-    def extrair_dados_fastboot(self):
-        try:
-            self.atualizar_status("Acessando variáveis de hardware (fastboot getvar all)...", "yellow")
-            
-            # Fastboot no Windows cospe o output no stderr
-            result = subprocess.run([CAMINHO_FASTBOOT, 'getvar', 'all'], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            output = result.stderr + "\n" + result.stdout
-            
-            if "waiting for any device" in output.lower() or not output.strip() or "FAILED" in output:
-                self.atualizar_status("Nenhum aparelho em modo Fastboot detectado.", "red")
-                return
-
-            info_dict = {}
-            for linha in output.split('\n'):
-                # Exemplo: (bootloader) imei: 351234567890123
-                if ':' in linha:
-                    partes = linha.split(':', 1)
-                    chave = partes[0].replace('(bootloader)', '').strip().lower()
-                    valor = partes[1].strip()
-                    info_dict[chave] = valor
-
-            imei1 = info_dict.get('imei', 'N/A')
-            imei2 = info_dict.get('imei2', 'N/A')
-            serie = info_dict.get('serialno', 'N/A')
-            
-            ram_raw = info_dict.get('ro.ramsize', info_dict.get('ram', 'N/A'))
-            armazenamento_raw = info_dict.get('ro.emmc_size', info_dict.get('ro.ufs_size', 'N/A'))
-            
-            ram_final = "N/A"
-            if ram_raw != "N/A":
-                if 'GB' in ram_raw.upper():
-                    ram_final = ram_raw.upper().replace(' ', '')
-            
-            armazenamento_final = "N/A"
-            if armazenamento_raw != "N/A":
-                if 'GB' in armazenamento_raw.upper():
-                    armazenamento_final = armazenamento_raw.upper().replace(' ', '')
-            
-            marca = "N/A"
-            modelo = info_dict.get('product', info_dict.get('hw.board', 'Desconhecido'))
-            
-            if 'moto' in modelo.lower() or 'motorola' in output.lower():
-                marca = "Motorola"
-            elif 'xiaomi' in output.lower() or 'poco' in output.lower():
-                marca = "Xiaomi"
-            
-            nome_comercial = modelo
-            eid = "N/A"
-            meid = "N/A"
-            
-            if imei1 != "N/A":
-                self.atualizar_status("Leitura Fastboot concluída com sucesso.", "#00FF00")
-            else:
-                self.atualizar_status("Leitura Fastboot concluída, mas sem IMEI no log.", "yellow")
-
-            self.preencher_dados_tela(marca, modelo, nome_comercial, armazenamento_final, ram_final, eid, imei1, imei2, meid, serie)
-            
-        except FileNotFoundError:
-            self.atualizar_status("Falha Crítica: fastboot.exe ausente na pasta platform-tools.", "red")
-        except Exception as e:
-            self.atualizar_status("Falha de Comunicação Fastboot.", "red")
-            
-    def carregar_modelos(self, marca_digitada):
-        texto = marca_digitada.strip()
-        if not texto or texto == "Carregando...":
-            return
-            
-        self.atualizar_status(f"Buscando modelos para a marca: {texto}...", "yellow")
-        
-        def realizar_request():
-            try:
-                url = f"{self._cfg.get('api_url', 'http://localhost:5000/api')}/triagem/marcas/{texto}/modelos"
-                response = requests.get(url, timeout=5, verify=False)
-                
-                if response.status_code == 200:
-                    dados = response.json()
-                    
-                    if isinstance(dados, dict):
-                        lista_real = dados.get("value", dados.get("data", []))
-                    else:
-                        lista_real = dados
-
-                    nomes_modelos = [item.get("nome", "") for item in lista_real if isinstance(item, dict)]
-                    
-                    if not nomes_modelos:
-                        nomes_modelos = [""]
-                        
-                    # --- AQUI ESTÁ A MUDANÇA PRINCIPAL ---
-                    self.after(0, lambda: self.atualizar_valores_combo(self.campo_nome_comercial, nomes_modelos))
-                    
-                    atual = self.campo_nome_comercial.get()
-                    if atual == "Selecione uma Marca" or atual == "":
-                         if nomes_modelos[0]:
-                             self.after(0, lambda: self.campo_nome_comercial.set(nomes_modelos[0]))
-                             
-                    self.after(0, lambda: self.atualizar_status(f"Modelos de {texto} carregados.", "gray"))
-                else:
-                    # --- E AQUI (FALLBACK) ---
-                    self.after(0, lambda: self.atualizar_valores_combo(self.campo_nome_comercial, [""]))
-            except Exception as e:
-                print(f"Erro ao buscar modelos: {e}") 
-                # --- E AQUI (FALLBACK EM CASO DE EXCEPTION) ---
-                self.after(0, lambda: self.atualizar_valores_combo(self.campo_nome_comercial, [""]))
-
-        threading.Thread(target=realizar_request, daemon=True).start()
-    
-    def carregar_modelos_fisicos(self, modelo_digitado):
-        texto = modelo_digitado.strip()
-        if not texto or texto == "Selecione uma Marca":
-            return
-            
-        self.atualizar_status(f"Buscando modelos físicos para: {texto}...", "yellow")
-        
-        def realizar_request():
-            try:
-                url = f"{self._cfg.get('api_url', 'http://localhost:5000/api')}/triagem/modelos/{texto}/modelos-fisicos"
-                response = requests.get(url, timeout=5, verify=False)
-                
-                if response.status_code == 200:
-                    dados = response.json()
-                    
-                    if isinstance(dados, dict):
-                        lista_real = dados.get("value", dados.get("data", []))
-                    else:
-                        lista_real = dados
-
-                    modelos_fisicos = [item.get("nome", "") for item in lista_real if isinstance(item, dict)]
-                    
-                    if not modelos_fisicos:
-                        modelos_fisicos = ["N/A"]
-                        
-                    # Atualiza o combo com os modelos físicos encontrados
-                    self.after(0, lambda: self.atualizar_valores_combo(self.campo_modelo, modelos_fisicos))
-                    
-                    # Auto-seleciona se há apenas 1 modelo físico disponível
-                    if len(modelos_fisicos) == 1:
-                        self.after(0, lambda: self.campo_modelo.set(modelos_fisicos[0]))
-                    else:
-                        atual = self.campo_modelo.get()
-                        if atual == "Selecione um Modelo" or atual == "":
-                            self.after(0, lambda: self.campo_modelo.set(modelos_fisicos[0]))
-                        
-                    self.after(0, lambda: self.atualizar_status(f"Modelos físicos carregados.", "gray"))
-                else:
-                    # --- E AQUI (FALLBACK) ---
-                    self.after(0, lambda: self.atualizar_valores_combo(self.campo_modelo, ["N/A"]))
-            except Exception as e:
-                print(f"Erro ao buscar modelos físicos: {e}") 
-                # --- E AQUI (FALLBACK EM CASO DE EXCEPTION) ---
-                self.after(0, lambda: self.atualizar_valores_combo(self.campo_modelo, ["N/A"]))
-
-        threading.Thread(target=realizar_request, daemon=True).start()      
-    
-    def carregar_dominios(self):
-        self.atualizar_status("Carregando domínios da API...", "yellow")
-        
-        def realizar_request():
-            try:
-                url = f"{self._cfg.get('api_url', 'http://localhost:5000/api')}/triagem/dominios"
-                print(url)
-                response = requests.get(url, timeout=5, verify=False)
-                if response.status_code == 200:
-                    dados = response.json()
-                    
-                    # Novas listas extraídas:
-                    marcas = [item["nome"] for item in dados.get("marcas", [])]
-                    modelos = [item["nome"] for item in dados.get("modelos", [])]
-                    
-                    # Extrações originais:
-                    cores = [item["nome"] for item in dados.get("cores", [])]
-                    estados = [item["nome"] for item in dados.get("estadosFisicos", [])]
-                    condicoes = [item["nome"] for item in dados.get("condicoesFuncionamento", [])]
-                    acessos = [item["nome"] for item in dados.get("estadosAcesso", [])]
-                    avarias = [item["nome"] for item in dados.get("avarias", [])]
-                    caixas = [item["nome"] for item in dados.get("caixasRecebimentos", [])]
-                    
-                    # --- AQUI OCORRE A GRANDE SUBSTITUIÇÃO DOS .configure ---
-                    self.after(0, lambda: self.atualizar_valores_combo(self.campo_marca, marcas))
-                    self.after(0, lambda: self.atualizar_valores_combo(self.campo_nome_comercial, modelos))
-
-                    self.after(0, lambda: self.atualizar_valores_combo(self.combo_cor, cores))
-                    self.after(0, lambda: self.atualizar_valores_combo(self.combo_estado, estados))
-                    self.after(0, lambda: self.atualizar_valores_combo(self.combo_condicao, condicoes))
-                    self.after(0, lambda: self.atualizar_valores_combo(self.combo_acesso, acessos))
-                    self.after(0, lambda: self.atualizar_valores_combo(self.combo_caixa, caixas))
-                    # ---------------------------------------------------------
-                    
-                    def renderizar_avarias():
-                        for widget in self.frame_avarias.winfo_children():
-                            widget.destroy()
-                        self.vars_avarias.clear()
-                        
-                        if hasattr(self, 'widgets_avarias'):
-                            self.widgets_avarias.clear()
-                        
-                        for avaria in avarias:
-                            var = ctk.StringVar(value="")
-                            chk = ctk.CTkCheckBox(self.frame_avarias, text=avaria, variable=var, onvalue=avaria, offvalue="")
-                            chk.pack(anchor="w", pady=2)
-                            self.vars_avarias[avaria] = var
-                            
-                            if hasattr(self, 'widgets_avarias'):
-                                self.widgets_avarias[avaria] = chk
-                            
-                    self.after(0, renderizar_avarias)
-                    self.after(0, lambda: self.atualizar_status("Domínios carregados com sucesso.", "gray"))
-            except Exception as e:
-                mensagem = f"Aviso: Falha ao carregar domínios da API. Erro: {e}"
-                self.after(0, lambda msg=mensagem: self.atualizar_status(msg, "red"))
-
-        threading.Thread(target=realizar_request, daemon=True).start()
-    
-    def enviar_para_api(self):
-        self.atualizar_status("Enviando dados para a API...", "yellow")
-        
-        peso_match = re.search(r'\d+', self.input_peso.get())
-        peso = int(peso_match.group()) if peso_match else 0
-        
-        arm_match = re.search(r'\d+', self.campo_armazenamento.get())
-        capacidade = int(arm_match.group()) if arm_match else 0
-        
-        chips_text = self.input_chips_inst.get()
-        chips_inst = int(chips_text) if chips_text.isdigit() else 0
-
-        chips_aceitos_text = self.input_qnt_chips.get()
-        chips_aceitos = int(chips_aceitos_text) if chips_aceitos_text.isdigit() else 0
-
-        avarias_lista = [{"nome": var.get()} for var in self.vars_avarias.values() if var.get() != ""]
-
-        ram_match = re.search(r'\d+', self.campo_ram.get())
-        capacidade_ram = int(ram_match.group()) if ram_match else None
-        
-        id_tecnico_texto = self.input_id_tecnico.get().strip()
-        id_responsavel = int(id_tecnico_texto) if id_tecnico_texto.isdigit() else 1
-        
-        def limpar_identificador(valor):
-            texto = valor.strip()
-            return "" if texto == "N/A" else texto
-
-        payload = {
-            "caixaRecebimento": { "nome": self.combo_caixa.get() },
-            "modelo": {
-                "marca": { "nome": self.campo_marca.get() },
-                "tipoEquipamento": { "nome": "Smartphone" }, 
-                "modelo": { "nome": self.campo_nome_comercial.get() },
-                "modeloFisico": { "nome": self.campo_modelo.get() }
-            },
-            "numeroSerie": limpar_identificador(self.campo_serie.get()),
-            "idResponsavelTecnico": id_responsavel, 
-            "imei1": limpar_identificador(self.campo_imei1.get()),
-            "imei2": limpar_identificador(self.campo_imei2.get()),
-            "meid": limpar_identificador(self.campo_meid.get()),
-            "eid": limpar_identificador(self.campo_eid.get()),
-            "capacidadeArmazenamentoGb": capacidade,
-            "capacidadeRamGb": capacidade_ram, 
-            "cor": { "nome": self.combo_cor.get() }, 
-            "qtdChipsInstalados": chips_inst,
-            "qtdChipsAceitos": chips_aceitos, 
-            "estadoFisico": { "nome": self.combo_estado.get() },
-            "estadoAcesso": { "nome": self.combo_acesso.get() }, 
-            "condicaoFuncionamento": { "nome": self.combo_condicao.get() },
-            "avarias": avarias_lista,
-            "pesoGramas": peso,
-            "observacoes": self.input_obs.get()
-        }
-
-        def realizar_request():
-            url = f"{self._cfg.get('api_url', 'http://localhost:5000/api')}/triagem/triagem"
-            try:
-                response = requests.post(url, json=payload, timeout=10, verify=False)
-                if response.status_code == 200:
-                    dados = response.json()
-                    id_estoque = dados.get("idItemEstoque")
-                    
-                    def sucesso_na_ui():
-                        self.atualizar_status(f"Triagem Salva! ID Estoque: {id_estoque}. Gerando etiqueta...", "#00FF00")
-                        self._patrimonio_num = int(id_estoque)
-                        self._patrimonio_atualizar_display()
-                        self.gerar_etiqueta_pdf()
-
-                    self.after(0, sucesso_na_ui)
-                else:
-                    erro_msg = response.text
-                    try:
-                        erro_json = response.json()
-                        erro_msg = erro_json.get("mensagem", erro_json.get("title", response.text))
-                    except Exception:
-                        pass
-                    self.after(0, lambda msg=f"Erro na API: {erro_msg}": self.atualizar_status(msg, "red"))
-            except requests.exceptions.RequestException as e:
-                mensagem_erro = f"Erro de conexão com o servidor: {e}"
-                self.after(0, lambda msg=mensagem_erro: self.atualizar_status(msg, "red"))
-
-        threading.Thread(target=realizar_request, daemon=True).start()           
-                
-    def filtrar_avarias(self, event=None):
-        termo = self.input_busca_avaria.get()
-        
-        # Remove acentos e converte para minúsculo
-        termo_norm = unicodedata.normalize('NFKD', termo).encode('ASCII', 'ignore').decode('utf-8').lower()
-
-        for avaria, chk in self.widgets_avarias.items():
-            avaria_norm = unicodedata.normalize('NFKD', avaria).encode('ASCII', 'ignore').decode('utf-8').lower()
-            
-            # Se o campo de busca estiver vazio, mostra tudo
-            if not termo_norm:
-                chk.pack(anchor="w", pady=2)
-                continue
-
-            # 1ª Tentativa: Contém o texto exato (ex: digita "tela" e acha "Arranhão na Tela")
-            if termo_norm in avaria_norm:
-                chk.pack(anchor="w", pady=2)
-            else:
-                # 2ª Tentativa: Busca similar/aproximada (ex: digita "aranhao" com erro ortográfico)
-                match_aproximado = False
-                for palavra in avaria_norm.split():
-                    # Calcula % de semelhança entre o que foi digitado e as palavras da avaria
-                    if difflib.SequenceMatcher(None, termo_norm, palavra).ratio() > 0.7:
-                        match_aproximado = True
-                        break
-                
-                if match_aproximado:
-                    chk.pack(anchor="w", pady=2)
-                else:
-                    chk.pack_forget() # Esconde a opção se não bater com nada           
-    
-    def cadastrar_nova_avaria(self):
-        nova_avaria = self.input_busca_avaria.get().strip()
-        
+    # =================================================================
+    #  CADASTRAR AVARIA
+    # =================================================================
+    def _cadastrar_nova_avaria(self):
+        nova_avaria = self.painel_insp.input_busca_avaria.get().strip()
         if not nova_avaria:
-            self.atualizar_status("Aviso: Digite o nome da avaria no campo de pesquisa antes de adicionar.", "yellow")
+            self._status("Aviso: Digite o nome da avaria no campo de pesquisa antes de adicionar.", "yellow")
             return
-            
-        self.atualizar_status(f"Cadastrando nova avaria: '{nova_avaria}'...", "yellow")
-        
-        def realizar_request():
+
+        self._status(f"Cadastrando nova avaria: '{nova_avaria}'...", "yellow")
+
+        def request():
             try:
-                # Monta a URL baseando-se na configuração (ex: /api/triagem/avarias)
-                url = f"{self._cfg.get('api_url', 'http://localhost:5000/api')}/triagem/avarias"
-                payload = {"nome": nova_avaria}
-                
-                response = requests.post(url, json=payload, timeout=5, verify=False)
-                
-                if response.status_code == 200:
-                    self.after(0, lambda: self.atualizar_status(f"Avaria '{nova_avaria}' adicionada com sucesso!", "#00FF00"))
-                    # 2. Limpa o campo de pesquisa
-                    self.after(0, lambda: self.input_busca_avaria.delete(0, 'end'))
-                    
-                    # 3. Força a limpeza do filtro visual (para mostrar tudo)
-                    self.after(0, self.filtrar_avarias)
-                    
-                    # 4. Atualiza as listas com a API
-                    self.after(0, self.carregar_dominios)
-                else:
-                    # Tenta extrair a mensagem de erro que você configurou no C# (resultado.Errors)
-                    erro_msg = response.text
-                    try:
-                        erro_json = response.json()
-                        erro_msg = erro_json.get("mensagem", erro_msg)
-                    except:
-                        pass
-                    self.after(0, lambda msg=f"Erro ao cadastrar avaria: {erro_msg}": self.atualizar_status(msg, "red"))
-                    
+                api_client.cadastrar_avaria(self._cfg["api_url"], nova_avaria)
+                self._status_thread(f"Avaria '{nova_avaria}' adicionada com sucesso!", "#00FF00")
+                self.after(0, lambda: self.painel_insp.input_busca_avaria.delete(0, 'end'))
+                self.after(0, self.painel_insp._filtrar_avarias)
+                self.after(0, self._carregar_dominios)
             except Exception as e:
-                self.after(0, lambda msg=f"Falha de conexão: {e}": self.atualizar_status(msg, "red"))
+                self._status_thread(f"Erro ao cadastrar avaria: {e}", "red")
 
-        threading.Thread(target=realizar_request, daemon=True).start()
-                  
-    def aplicar_filtro_dropdown(self, combo):
-        """Autocomplete com Toplevel+Listbox customizado.
-        Diferente do Menu nativo (.post()), o Toplevel não faz grab do teclado,
-        então o usuário pode digitar enquanto as sugestões aparecem.
-        """
-        import tkinter as tk
+        threading.Thread(target=request, daemon=True).start()
 
-        combo._valores_originais = combo.cget("values")
-        combo._popup_clicando = False
+    # =================================================================
+    #  ATALHOS DE TECLADO
+    # =================================================================
+    def _configurar_atalhos(self):
+        # Navegação entre campos de hardware (Enter avança)
+        self.painel_hw.campo_imei1.bind_entry("<Return>", lambda e: self.painel_hw.campo_imei2.focus())
+        self.painel_hw.campo_imei2.bind_entry("<Return>", lambda e: self.painel_hw.campo_meid.focus())
+        self.painel_hw.campo_meid.bind_entry("<Return>", lambda e: self.painel_insp.combo_cor.focus())
 
-        # --- Cria o popup de sugestões ---
-        popup = tk.Toplevel(combo)
-        popup.withdraw()
-        popup.overrideredirect(True)          # Sem barra de título
-        popup.wm_attributes('-topmost', True) # Sempre na frente
+        # Selecionar tudo ao focar nos campos de hardware
+        campos_hw = [self.painel_hw.campo_imei1,
+                     self.painel_hw.campo_imei2, self.painel_hw.campo_meid]
+        for campo in campos_hw:
+            campo.bind_entry("<FocusIn>", lambda e, c=campo: c._entry.after(10, lambda: c.select_all()))
 
-        # Frame externo com borda
-        frame = tk.Frame(popup, bg='#1f6aa5', relief='flat', bd=1)
-        frame.pack(fill='both', expand=True)
-
-        scrollbar = tk.Scrollbar(frame, bg='#3a3a3a', troughcolor='#2b2b2b',
-                                 relief='flat', width=10)
-        scrollbar.pack(side='right', fill='y')
-
-        listbox = tk.Listbox(
-            frame,
-            yscrollcommand=scrollbar.set,
-            bg='#2b2b2b',
-            fg='white',
-            selectbackground='#1f6aa5',
-            selectforeground='white',
-            relief='flat',
-            borderwidth=0,
-            highlightthickness=0,
-            font=('Segoe UI', 10),
-            activestyle='none',
-            cursor='hand2',
-        )
-        listbox.pack(side='left', fill='both', expand=True, padx=1, pady=1)
-        scrollbar.config(command=listbox.yview)
-
-        combo._ac_popup   = popup
-        combo._ac_listbox = listbox
-
-        # --- Funções auxiliares ---
-        def _mostrar(valores):
-            """Preenche e exibe o popup abaixo do combo."""
-            if not valores or valores == [""]:
-                _fechar()
-                return
-            listbox.delete(0, 'end')
-            for v in valores:
-                listbox.insert('end', '  ' + str(v))
-
-            combo.update_idletasks()
-            x = combo.winfo_rootx()
-            y = combo.winfo_rooty() + combo.winfo_height()
-            w = combo.winfo_width()
-            h = min(len(valores), 8) * 22 + 4
-            popup.geometry(f"{w}x{h}+{x}+{y}")
-            popup.deiconify()
-            popup.lift()
-            # Devolve o foco ao campo de texto imediatamente após mostrar o popup.
-            # O Toplevel não faz grab do teclado (ao contrário do Menu.post()),
-            # então isso funciona e permite continuar digitando.
-            combo._entry.focus_set()
-
-        def _fechar():
-            try:
-                popup.withdraw()
-            except Exception:
-                pass
-
-        def _selecionar(event=None):
-            """Aplica o valor selecionado na listbox."""
-            sel = listbox.curselection()
-            if sel:
-                valor = listbox.get(sel[0]).strip()
-                combo.set(valor)
-                combo.configure(values=getattr(combo, '_valores_originais', []))
-                _fechar()
-                combo._entry.focus_set()
-                try:
-                    if combo._command:
-                        combo._command(valor)
-                except Exception:
-                    pass
-            combo._popup_clicando = False
-
-        # --- Filtragem fuzzy (igual à lógica anterior) ---
-        def _filtrar(termo):
-            termo_norm = unicodedata.normalize('NFKD', termo).encode('ASCII', 'ignore').decode('utf-8').lower()
-            originais  = getattr(combo, '_valores_originais', [])
-
-            if not termo_norm or termo in ("Carregando...", "Selecione uma Marca"):
-                return originais
-
-            filtrados = []
-            for valor in originais:
-                valor_str  = str(valor)
-                valor_norm = unicodedata.normalize('NFKD', valor_str).encode('ASCII', 'ignore').decode('utf-8').lower()
-                if termo_norm in valor_norm:
-                    filtrados.append(valor_str)
-                else:
-                    for palavra in valor_norm.split():
-                        if difflib.SequenceMatcher(None, termo_norm, palavra).ratio() > 0.7:
-                            filtrados.append(valor_str)
-                            break
-            return filtrados
-
-        # --- Bindings do campo de texto ---
-        def on_keyrelease(event):
-            if event.keysym == 'Escape':
-                _fechar()
-                return
-            if event.keysym == 'Return':
-                _selecionar()
-                return
-            if event.keysym in ('Up', 'Down', 'Left', 'Right', 'Tab'):
-                return
-
-            resultado = _filtrar(combo.get())
-            combo.configure(values=resultado if resultado else [""])
-            _mostrar(resultado)
-
-        def on_click_entry(event):
-            """Clicou no campo: mostra sugestões (já filtradas ou todas)."""
-            resultado = _filtrar(combo.get())
-            originais = getattr(combo, '_valores_originais', [])
-            _mostrar(resultado if resultado else originais)
-
-        def on_focusout(event):
-            """Fecha o popup quando o campo perde o foco — exceto ao clicar na listbox."""
-            def _verificar():
-                if not combo._popup_clicando:
-                    _fechar()
-            combo.after(150, _verificar)
-
-        # --- Bindings da listbox ---
-        listbox.bind('<ButtonPress-1>',   lambda e: setattr(combo, '_popup_clicando', True))
-        listbox.bind('<ButtonRelease-1>', _selecionar)
-        listbox.bind('<FocusOut>',        lambda e: combo.after(100, _fechar))
-
-        # --- Bindings do entry ---
-        combo._entry.bind('<KeyRelease>', on_keyrelease,    add='+')
-        combo._entry.bind('<Button-1>',   on_click_entry,   add='+')
-        combo._entry.bind('<FocusOut>',   on_focusout,      add='+')
+        # Ctrl+P para imprimir
+        self.bind("<Control-p>", lambda e: self._abrir_janela_editar_etiqueta())
 
 
-
-    def atualizar_valores_combo(self, combo, valores):
-        """Sempre que a API retornar dados novos, usamos essa função para salvar a lista original."""
-        combo.configure(values=valores)
-        combo._valores_originais = valores
-        if combo.get() == "Carregando...":
-            combo.set("")
-                    
-                
 if __name__ == "__main__":
     app = SistemaTriagem()
     app.mainloop()
