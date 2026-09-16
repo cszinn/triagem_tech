@@ -89,7 +89,7 @@ class HubApplication(ctk.CTk):
         )
 
         # Rodapé
-        self.lbl_rodape = ctk.CTkLabel(self, text="Instituto ITI - Versão 1.0", text_color="gray", font=ctk.CTkFont(size=12))
+        self.lbl_rodape = ctk.CTkLabel(self, text="Instituto ITI - Versão 2.0.1", text_color="gray", font=ctk.CTkFont(size=12))
         self.lbl_rodape.grid(row=2, column=0, sticky="s", pady=20)
 
     def criar_card(self, parent, row, col, titulo, descricao, cor_botao, comando, estado="normal"):
@@ -131,7 +131,7 @@ class HubApplication(ctk.CTk):
 
     def abrir_consulta(self):
         """Abre a página web de consulta no navegador."""
-        url = "https://useful-gecko-present.ngrok-free.app/consulta" # Placeholder link
+        url = "https://useful-gecko-present.ngrok-free.app/estoque"
         try:
             webbrowser.open(url)
         except Exception as e:
