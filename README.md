@@ -1,7 +1,7 @@
 # Sistema de Triagem e Auditoria de Dispositivos Móveis 📱🔍
-### Instituto ITI — Operação Receita Federal
+### Instituto ITI — Operação Receita Federal (Triagem Tech 2.0)
 
-> Ferramenta de chão de fábrica para extração automatizada de dados de hardware (IMEI, EID, MEID, Número de Série) diretamente da placa-mãe via cabo USB, com integração a um sistema de estoque via API REST, exportação para Excel e geração de etiquetas térmicas.
+> Ferramenta de chão de fábrica para extração automatizada de dados de hardware (IMEI, MEID, Número de Série) diretamente da placa-mãe via cabo USB, com integração a um sistema de estoque via API REST, exportação para Excel e geração de etiquetas térmicas.
 
 ---
 
@@ -15,10 +15,7 @@
 2. [Estrutura do Repositório](#-estrutura-do-repositório)
 3. [Pré-requisitos](#-pré-requisitos)
 4. [Guia de Instalação Completo](#-guia-de-instalação-completo)
-   - [Passo 1 — Python](#passo-1--instalar-o-python)
-   - [Passo 2 — Dependências Python](#passo-2--instalar-as-dependências-python)
-   - [Passo 3 — Driver para iPhone (iTunes)](#passo-3--driver-para-iphone-suporte-apple)
-   - [Passo 4 — Configurar o PATH do Windows](#passo-4--configurar-o-path-do-windows)
+   - [Passo Único — Instalador](#passo-único--executar-o-instalador-automático)
 5. [Como Executar](#-como-executar)
 6. [Guia de Uso da Interface](#-guia-de-uso-da-interface)
    - [Painel: Leitura USB](#-painel-leitura-usb-hardware)
@@ -38,25 +35,42 @@
 
 O sistema substitui a anotação manual de dados de hardware durante a triagem de lotes de celulares da Receita Federal. Em vez de digitar IMEI, número de série e modelo à mão (sujeito a erros humanos), o operador conecta o aparelho via **cabo USB** e clica em um botão — a ferramenta lê os dados diretamente da memória da placa-mãe.
 
-**Para iPhones:** utiliza o motor `ideviceinfo` (da suíte `libimobiledevice`), que se comunica com o protocolo lockdown da Apple.
+**Para iPhones:** utiliza o motor `ideviceinfo` (da suíte `libimobiledevice`), que se comunica com o protocolo lockdown da Apple. Inclui mapeamento nativo de hardware de todos os iPhones, do iPhone 5 ao 18 Pro Max.
 
-**Para Androids:** utiliza o `adb` (Android Debug Bridge) via protocolo de depuração USB.
+**Para Androids:** utiliza o `adb` (Android Debug Bridge) via protocolo de depuração USB, e também oferece suporte primário a Fastboot.
 
-Os dados extraídos são exibidos na tela, permitindo complementação com inspeção física (cor, estado, avarias). Ao clicar em **"SALVAR NO SISTEMA"**, o formulário completo é enviado para a API de estoque, que registra a triagem e retorna um **ID de patrimônio** — usado automaticamente para gerar e imprimir a etiqueta térmica.
+Os dados extraídos são exibidos na tela, permitindo complementação com inspeção física (cor, estado, avarias). Ao clicar em **"SALVAR NO SISTEMA"**, o formulário completo é enviado para a API de estoque, que registra a triagem e retorna um **ID de patrimônio** — usado automaticamente para gerar e imprimir a etiqueta térmica. A v2.0 suporta filtragem inteligente de status da API com ordem de gravidade predefinida e painéis perfeitamente ajustáveis para qualquer tamanho de monitor.
 
 ---
 
-## 📁 Estrutura do Repositório
+## 📁 Estrutura do Repositório (Arquitetura Modular)
 
 ```
-C:\triagem_tech-main\   (ou o nome da pasta que você extraiu)
+C:\Triagem\   (Recomendado extrair na raiz do disco C)
 │
-├── hub.py                  # Hub Central de Módulos (EXECUTE ESTE ARQUIVO)
-├── painel_triagem.py       # Módulo 1: Auditoria e Triagem de Dispositivos
+├── hub.py                  # Hub Central Moderno (Grade de Módulos e Atalhos Web)
+├── painel_triagem.py       # Ponto de entrada do Painel de Triagem
 ├── servidor_mock.py        # Servidor de teste local para uso offline
-├── extrator.py             # Motor de extração via ADB (uso legado/CLI)
 ├── requirements.txt        # Dependências Python
 ├── config.json             # Configurações do app (API, impressora, patrimônio)
+│
+├── motores\                # Lógica de comunicação USB
+│   ├── ios.py              # Extrator de iPhones (libimobiledevice)
+│   ├── android.py          # Extrator ADB
+│   ├── fastboot.py         # Extrator Fastboot
+│   └── radar_usb.py        # Detector de aparelhos em tempo real
+│
+├── servicos\               # Comunicação externa
+│   ├── api_client.py       # Conexões REST, tratamento de erros e filtros de status
+│   └── impressao.py        # Geração térmica via PIL/ReportLab e integração pywin32
+│
+├── ui\                     # Componentes visuais CustomTkinter
+│   ├── componentes.py      # Autocomplete Entry, ReadOnly Fields, etc.
+│   ├── painel_hardware.py  # Interface rolável da esquerda (USB)
+│   ├── painel_inspecao.py  # Interface do centro
+│   ├── painel_log.py       # Interface da direita (Histórico)
+│   ├── barra_acoes.py      # Rodapé
+│   └── janela_etiqueta.py  # Modal de edição manual
 │
 ├── platform-tools\         # Ferramentas de comunicação USB (ADB + libimobiledevice)
 │   ├── adb.exe             # Motor Android (ADB)
@@ -205,12 +219,10 @@ Com todos os campos preenchidos, clique em **"COPIAR PARA EXCEL"**.
 O sistema copia para a área de transferência uma linha com **16 colunas separadas por tabulação**, na seguinte ordem:
 
 ```
-Tipo | Marca | Modelo | Nome Comercial | Cor | IMEI 1 | IMEI 2 | MEID | EID | Série | Qnt Chips | Chips Inst | Estado | Obs+Avarias | Condição | Peso
+Tipo | Marca | Modelo | Nome Comercial | Cor | IMEI 1 | IMEI 2 | MEID | Série | Qnt Chips | Chips Inst | Estado | Obs+Avarias | Condição | Peso
 ```
 
 Para colar na planilha: clique na célula da primeira coluna da linha vazia no Excel e pressione `Ctrl+V`.
-
-> **Sobre o campo EID:** O valor é colado com um apóstrofo (`'`) prefixado automaticamente, para evitar que o Excel interprete o número de 32 dígitos do eSIM como notação científica.
 
 ---
 
@@ -404,4 +416,4 @@ python hub.py
 
 ---
 
-*Instituto ITI — Documentação interna. Versão da ferramenta: 1.0*
+*Instituto ITI — Documentação interna. Versão da ferramenta: 2.0*
