@@ -10,7 +10,7 @@ import customtkinter as ctk
 from ui.componentes import LabeledEntry, AutocompleteEntry
 
 
-class PainelInspecao(ctk.CTkScrollableFrame):
+class PainelInspecao(ctk.CTkFrame):
     """Painel de inspeção física (coluna central)."""
 
     def __init__(self, master, callbacks=None, **kwargs):
@@ -21,14 +21,18 @@ class PainelInspecao(ctk.CTkScrollableFrame):
                                font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"))
         lbl_sec.pack(pady=(15, 20))
 
-        # ID do Responsável Técnico
-        self.input_id_tecnico = LabeledEntry(self, "ID Responsável Técnico:")
-        self.input_id_tecnico.pack(fill="x", padx=20, pady=(5, 10))
+        # ID e Caixa lado a lado
+        frame_id_caixa = ctk.CTkFrame(self, fg_color="transparent")
+        frame_id_caixa.pack(fill="x", padx=20, pady=(5, 10))
+        frame_id_caixa.grid_columnconfigure(0, weight=1)
+        frame_id_caixa.grid_columnconfigure(1, weight=2) # Caixa costuma ser texto maior
+
+        self.input_id_tecnico = LabeledEntry(frame_id_caixa, "ID Responsável Técnico:")
+        self.input_id_tecnico.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.input_id_tecnico.set("1")
 
-        # Caixa de Recebimento
-        self.combo_caixa = AutocompleteEntry(self, "📦 Caixa de Recebimento:")
-        self.combo_caixa.pack(fill="x", padx=20, pady=(5, 10))
+        self.combo_caixa = AutocompleteEntry(frame_id_caixa, "📦 Caixa de Recebimento:")
+        self.combo_caixa.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         # Cor do Aparelho
         self.combo_cor = AutocompleteEntry(self, "🎨 Cor do Aparelho:")
@@ -53,21 +57,21 @@ class PainelInspecao(ctk.CTkScrollableFrame):
         self.input_peso = ctk.CTkEntry(frame_chips_peso, height=35)
         self.input_peso.grid(row=1, column=2, sticky="ew", padx=(4, 0))
 
-        # Estado Físico
-        self.combo_estado = AutocompleteEntry(self, "📱 Estado Físico:")
-        self.combo_estado.pack(fill="x", padx=20, pady=(5, 10))
+        # Estado Físico, Condição e Acesso lado a lado (3 colunas)
+        frame_estados = ctk.CTkFrame(self, fg_color="transparent")
+        frame_estados.pack(fill="x", padx=20, pady=(5, 10))
+        frame_estados.grid_columnconfigure(0, weight=1)
+        frame_estados.grid_columnconfigure(1, weight=1)
+        frame_estados.grid_columnconfigure(2, weight=1)
 
-        # Condição e Acesso lado a lado
-        frame_cond_acesso = ctk.CTkFrame(self, fg_color="transparent")
-        frame_cond_acesso.pack(fill="x", padx=20, pady=(5, 10))
-        frame_cond_acesso.grid_columnconfigure(0, weight=1)
-        frame_cond_acesso.grid_columnconfigure(1, weight=1)
+        self.combo_estado = AutocompleteEntry(frame_estados, "📱 Estado Físico:")
+        self.combo_estado.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
-        self.combo_condicao = AutocompleteEntry(frame_cond_acesso, "⚙️ Condição de Func.:")
-        self.combo_condicao.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.combo_condicao = AutocompleteEntry(frame_estados, "⚙️ Condição de Func.:")
+        self.combo_condicao.grid(row=0, column=1, sticky="ew", padx=(4, 4))
 
-        self.combo_acesso = AutocompleteEntry(frame_cond_acesso, "🔓 Estado de Acesso:")
-        self.combo_acesso.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.combo_acesso = AutocompleteEntry(frame_estados, "🔓 Estado de Acesso:")
+        self.combo_acesso.grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
         # Observações
         self.input_obs = LabeledEntry(self, "📝 Observações Adicionais:")

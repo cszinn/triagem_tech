@@ -7,7 +7,7 @@ import customtkinter as ctk
 from ui.componentes import ReadOnlyField, AutocompleteEntry
 
 
-class PainelHardware(ctk.CTkScrollableFrame):
+class PainelHardware(ctk.CTkFrame):
     """Painel de leitura USB (coluna esquerda)."""
 
     def __init__(self, master, callbacks=None, **kwargs):
@@ -90,11 +90,16 @@ class PainelHardware(ctk.CTkScrollableFrame):
 
         # Identificadores
 
-        self.campo_imei1 = ReadOnlyField(self, "📶 IMEI 1:")
-        self.campo_imei1.pack(fill="x", padx=20, pady=(4, 0))
+        frame_imeis = ctk.CTkFrame(self, fg_color="transparent")
+        frame_imeis.pack(fill="x", padx=20, pady=(4, 0))
+        frame_imeis.grid_columnconfigure(0, weight=1)
+        frame_imeis.grid_columnconfigure(1, weight=1)
 
-        self.campo_imei2 = ReadOnlyField(self, "📶 IMEI 2:")
-        self.campo_imei2.pack(fill="x", padx=20, pady=(4, 0))
+        self.campo_imei1 = ReadOnlyField(frame_imeis, "📶 IMEI 1:")
+        self.campo_imei1.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self.campo_imei2 = ReadOnlyField(frame_imeis, "📶 IMEI 2:")
+        self.campo_imei2.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         self.campo_meid = ReadOnlyField(self, "📳 MEID:")
         self.campo_meid.pack(fill="x", padx=20, pady=(4, 0))

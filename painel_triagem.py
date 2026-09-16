@@ -266,8 +266,14 @@ class SistemaTriagem(ctk.CTk):
     def _aplicar_dominios(self, dominios: dict):
         """Aplica os domínios a todos os painéis."""
         self.painel_hw.campo_marca.set_values(dominios.get("marcas", []))
-        self.painel_hw.campo_nome_comercial.set_values(dominios.get("modelos", []))
         self.painel_insp.popular_dominios(dominios)
+        
+        # Se já tiver uma marca selecionada, recarrega os modelos comerciais dela em vez de mostrar todos
+        marca_atual = self.painel_hw.campo_marca.get()
+        if marca_atual and marca_atual != "Selecione...":
+            self._carregar_modelos(marca_atual)
+        else:
+            self.painel_hw.campo_nome_comercial.set_values(dominios.get("modelos", []))
 
     def _carregar_modelos(self, marca):
         if not marca or marca == "Carregando...":
@@ -320,9 +326,7 @@ class SistemaTriagem(ctk.CTk):
                     
                 self.after(0, lambda: self.painel_hw.campo_modelo.set_values(modelos_limpos))
                 
-                # Para agilizar o Modo Manual, vamos sempre auto-selecionar o primeiro modelo físico válido
-                # (ex: se tiver iPhone9,2 e iPhone9,4, ele preenche o primeiro sozinho sem travar o usuário)
-                self.after(0, lambda: self.painel_hw.campo_modelo.set(modelos_limpos[0]))
+                # Removida a auto-seleção forçada para permitir que o usuário escolha manualmente a versão exata do processador/placa
                 
                 self._status_thread("Modelos físicos carregados.", "gray")
             except Exception as e:
