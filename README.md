@@ -189,7 +189,7 @@ Localizado ao **centro**. Preenchido manualmente pelo operador durante a vistori
 | **ID Responsável Técnico** | Número de identificação do operador que realizou a triagem |
 | **Caixa de Recebimento** | Lote/caixa de origem do aparelho (lista da API) |
 | **Cor do Aparelho** | Dropdown com cores da API (ex: `Preto`, `Branco`, `Azul`) |
-| **Chips Aceit. / Chips Inst. / Peso** | Capacidade de chips, chips instalados e peso em gramas |
+| **Chips Aceit. / Chips Inst. / Peso** | **Chips Aceitos** é inferido automaticamente pelo Nome Comercial (ex: iPhone X+ = 2). |
 | **Estado Físico** | `Excelente / Bom / Regular / Ruim / Sucata` (lista da API) |
 | **Condição de Funcionamento** | `Excelente / Liga Parcialmente / Não Liga / Bloqueado` |
 | **Estado de Acesso** | `Desbloqueado / Bloqueado por Senha / iCloud Ativo / FRP Ativo` |

@@ -123,6 +123,7 @@ class AutocompleteEntry(ctk.CTkFrame):
         self._values = values or []
         self._command = command
         self._popup_clicando = False
+        self._last_notified_value = ""
 
         # Criar popup Toplevel
         self._popup = tk.Toplevel(self)
@@ -157,6 +158,12 @@ class AutocompleteEntry(ctk.CTkFrame):
         self._listbox.bind('<ButtonPress-1>', lambda e: setattr(self, '_popup_clicando', True))
         self._listbox.bind('<ButtonRelease-1>', self._selecionar)
         self._listbox.bind('<FocusOut>', lambda e: self.after(100, self._fechar_popup))
+
+    def _notificar(self, valor: str):
+        """Dispara o comando (callback) apenas se o valor mudou desde a última vez."""
+        if self._command and valor != self._last_notified_value:
+            self._last_notified_value = valor
+            self._command(valor)
 
     def _filtrar(self, termo: str) -> list:
         termo_norm = unicodedata.normalize('NFKD', termo).encode('ASCII', 'ignore').decode('utf-8').lower()
@@ -217,8 +224,8 @@ class AutocompleteEntry(ctk.CTkFrame):
             self._fechar_popup()
             self._entry.focus_set()
             
-            if self._command:
-                self._command(valor)
+            if valor:
+                self._notificar(valor)
         self._popup_clicando = False
 
     def _on_keyrelease(self, event):
@@ -232,8 +239,8 @@ class AutocompleteEntry(ctk.CTkFrame):
             # Enter fecha a lista e dispara o comando com o texto que o usuário digitou livremente
             valor = self._entry.get().strip()
             self._fechar_popup()
-            if self._command and valor:
-                self._command(valor)
+            if valor:
+                self._notificar(valor)
             return
         if event.keysym in ('Up', 'Down', 'Left', 'Right', 'Tab'):
             return
@@ -248,10 +255,13 @@ class AutocompleteEntry(ctk.CTkFrame):
         self._mostrar_popup(resultado if resultado else self._values)
 
     def _on_focusout(self, event):
-        # Apenas fecha o popup
+        # Fecha o popup e notifica se houve alteração manual
         def _verificar():
             if not self._popup_clicando:
                 self._fechar_popup()
+                valor = self._entry.get().strip()
+                if valor:
+                    self._notificar(valor)
         self.after(150, _verificar)
 
     # --- API pública ---

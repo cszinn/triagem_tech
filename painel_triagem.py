@@ -292,14 +292,38 @@ class SistemaTriagem(ctk.CTk):
             return
         self._status(f"Buscando modelos físicos para: {modelo}...", "yellow")
 
+        # --- Inferir Quantidade de Chips Aceitos ---
+        marca = self.painel_hw.campo_marca.get().lower()
+        modelo_lower = modelo.lower()
+        qnt_chips = "2"  # Padrão para quase todos os smartphones modernos (Físico + eSIM)
+
+        if "apple" in marca:
+            # Modelos antigos da Apple que só suportam 1 chip (antes do iPhone XR/XS que trouxeram eSIM)
+            # O iPhone X original também só tinha 1 chip, mas para manter a regra que você pediu (do X pra cima = 2):
+            antigos = ["iphone 5", "iphone 6", "iphone 7", "iphone 8", "iphone se (1", "iphone se 1"]
+            if any(antigo in modelo_lower for antigo in antigos):
+                qnt_chips = "1"
+        
+        self.painel_insp.input_qnt_chips.delete(0, 'end')
+        self.painel_insp.input_qnt_chips.insert(0, qnt_chips)
+        # -------------------------------------------
+
         def request():
             try:
                 modelos_fisicos = api_client.carregar_modelos_fisicos(self._cfg["api_url"], modelo)
-                if not modelos_fisicos:
-                    modelos_fisicos = ["N/A"]
-                self.after(0, lambda: self.painel_hw.campo_modelo.set_values(modelos_fisicos))
-                if len(modelos_fisicos) == 1:
-                    self.after(0, lambda: self.painel_hw.campo_modelo.set(modelos_fisicos[0]))
+                
+                # Limpa sujeiras do banco de dados
+                modelos_limpos = [m for m in modelos_fisicos if m.strip().upper() not in ("", "N/A", "CARREGANDO...")]
+                
+                if not modelos_limpos:
+                    modelos_limpos = ["N/A"]
+                    
+                self.after(0, lambda: self.painel_hw.campo_modelo.set_values(modelos_limpos))
+                
+                # Para agilizar o Modo Manual, vamos sempre auto-selecionar o primeiro modelo físico válido
+                # (ex: se tiver iPhone9,2 e iPhone9,4, ele preenche o primeiro sozinho sem travar o usuário)
+                self.after(0, lambda: self.painel_hw.campo_modelo.set(modelos_limpos[0]))
+                
                 self._status_thread("Modelos físicos carregados.", "gray")
             except Exception as e:
                 print(f"Erro ao buscar modelos físicos: {e}")
