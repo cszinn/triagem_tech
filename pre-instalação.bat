@@ -18,8 +18,18 @@ setx PATH "%PATH%;%~dp0platform-tools" /M
 echo.
 echo [4/4] Instalando dependencias do Python...
 timeout /t 5 /nobreak > NUL
-python -m pip install --upgrade pip
-python -m pip install -r "%~dp0requirements.txt"
+
+:: Tenta instalar usando o Launcher nativo do Python (que ja deve estar no PATH)
+py -m pip install --upgrade pip
+py -m pip install -r "%~dp0requirements.txt"
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [AVISO IMPORTANTE]
+    echo Falha ao instalar modulos. O Windows ainda nao reconheceu o Python instalado.
+    echo Por favor, FECHE esta janela e EXECUTE ESTE ARQUIVO NOVAMENTE para concluir!
+    echo.
+)
 
 echo.
 echo =======================================================

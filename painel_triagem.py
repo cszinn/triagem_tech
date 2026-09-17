@@ -6,6 +6,7 @@ Janela principal que integra todos os painéis e serviços.
 import threading
 import os
 import re
+import argparse
 import customtkinter as ctk
 from autocorrect import Speller
 
@@ -42,8 +43,16 @@ threading.Thread(target=_inicializar_speller, daemon=True).start()
 
 class SistemaTriagem(ctk.CTk):
 
-    def __init__(self):
+    def __init__(self, usuario_id="1", usuario_nome="Operador Local"):
         super().__init__()
+        self.usuario_id = str(usuario_id)
+        self.usuario_nome = str(usuario_nome)
+
+        # --- Responsividade para Telas de Notebook (ex: 1366x768) ---
+        altura_tela = self.winfo_screenheight()
+        if altura_tela <= 800:
+            ctk.set_window_scaling(0.85)
+            ctk.set_widget_scaling(0.85)
 
         self._cfg = cfg_module.carregar()
         self.title(self._cfg["app_titulo"])
@@ -103,6 +112,11 @@ class SistemaTriagem(ctk.CTk):
 
         # --- Inicialização ---
         self._status("Sistema iniciado. Aguardando conexão USB.", "gray")
+        
+        # Travar o ID do técnico
+        self.painel_insp.input_id_tecnico.set(self.usuario_id)
+        self.painel_insp.input_id_tecnico._entry.configure(state="disabled", text_color="gray")
+        
         self._iniciar_radar_usb()
         self._carregar_dominios()
 
@@ -127,7 +141,7 @@ class SistemaTriagem(ctk.CTk):
         self.lbl_titulo.grid(row=0, column=0, columnspan=3, pady=(15, 5))
 
         self.lbl_status = ctk.CTkLabel(
-            self, text="Inicializando motor de triagem...",
+            self, text=f"Bem-vindo(a), {self.usuario_nome} | Inicializando motor...",
             text_color="gray", font=ctk.CTkFont(size=14)
         )
         self.lbl_status.grid(row=1, column=0, columnspan=3, pady=(0, 10))
@@ -625,5 +639,32 @@ class SistemaTriagem(ctk.CTk):
 
 
 if __name__ == "__main__":
-    app = SistemaTriagem()
+    parser = argparse.ArgumentParser(description="Triagem Tech - Painel Operacional")
+    parser.add_argument("--usuario-id", required=True, help="ID do usuario logado (Fornecido pelo Hub)")
+    parser.add_argument("--usuario-nome", required=True, help="Nome do usuario logado")
+    parser.add_argument("--session-token", required=True, help="Token de sessao criptografado contendo os cookies")
+    
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        import tkinter.messagebox as mb
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        mb.showerror("Acesso Negado", "Você não pode abrir a Triagem diretamente!\nPor favor, abra o arquivo 'hub.py' e faça o login para acessar o sistema.")
+        sys.exit(1)
+        
+    # Decodifica os cookies recebidos do Hub e injeta no cliente API do subprocesso
+    try:
+        import base64
+        import json
+        from servicos import api_client
+        cookies_json = base64.b64decode(args.session_token).decode('utf-8')
+        cookies_dict = json.loads(cookies_json)
+        api_client.configurar_sessao_com_cookies(cookies_dict)
+    except Exception as e:
+        print("Erro ao carregar sessão:", e)
+        sys.exit(1)
+
+    app = SistemaTriagem(usuario_id=args.usuario_id, usuario_nome=args.usuario_nome)
     app.mainloop()

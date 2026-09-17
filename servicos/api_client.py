@@ -7,6 +7,16 @@ Inclui tradução e formatação amigável de erros da API.
 import requests
 import re
 
+session = requests.Session()
+usa_cookies = False
+
+def configurar_sessao_com_cookies(cookies_dict):
+    global usa_cookies
+    if cookies_dict:
+        for k, v in cookies_dict.items():
+            session.cookies.set(k, v)
+        usa_cookies = True
+
 def _chave_ordenacao_natural(texto: str):
     """Gera chave para ordenação natural (ex: iPhone 5 antes de iPhone 11)."""
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(texto))]
@@ -78,7 +88,10 @@ def _tratar_erro_api(response):
 def _fazer_requisicao(metodo, url, **kwargs):
     """Wrapper para tratar conexão e timeouts globalmente."""
     try:
-        response = requests.request(metodo, url, verify=False, **kwargs)
+        if usa_cookies:
+            response = session.request(metodo, url, verify=False, **kwargs)
+        else:
+            response = requests.request(metodo, url, verify=False, **kwargs)
         if not response.ok:
             _tratar_erro_api(response)
         return response.json() if response.text else {}
